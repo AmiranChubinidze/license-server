@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>License Admin Panel</title>
+    <link rel="stylesheet" href="admin.css" />
+  </head>
+  <body>
+    <h1>License Admin Panel</h1>
+    <div class="panel">
+      <!-- Add Key Row -->
+      <div class="controls">
+        <input
+          type="text"
+          id="newKey"
+          class="newKey"
+          placeholder="Enter new license key"
+        />
+        <button class="btn btn-add" id="addKey">Add Key</button>
+      </div>
+
+      <!-- License Table -->
+      <table id="licenseTable">
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Device ID</th>
+            <th>Status</th>
+            <th>Notes</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Rows populated dynamically -->
+        </tbody>
+      </table>
+    </div>
+
+    <script>
+      const API = "/admin";
+
+      // Create table row
+      function createRow(row) {
+        const tr = document.createElement("tr");
+        tr.style.opacity = 0;
+        tr.innerHTML = `
+    <td>${row.key}</td>
+    <td>${row.deviceId || "None"}</td>
+    <td class="status ${row.deviceId ? "active" : "inactive"}">${
+          row.deviceId ? "Active" : "Inactive"
+        }</td>
+    <td class="notes">
+      <input type="text" value="${
+        row.notes || ""
+      }" placeholder="Add note" onchange="updateNote('${
+          row.key
+        }', this.value)" />
+    </td>
+    <td>
+      <button class="btn btn-revoke" onclick="revokeKey('${
+        row.key
+      }', this)">Revoke</button>
+    </td>
+  `;
+        return tr;
+      }
+
+      // Fetch and render keys
+      async function fetchKeys() {
+        try {
+          const res = await fetch(API + "/list");
+          const data = await res.json();
+          const tbody = document.querySelector("#licenseTable tbody");
+          tbody.innerHTML = "";
+          data.forEach((row) => {
+            const tr = createRow(row);
+            tbody.appendChild(tr);
+            requestAnimationFrame(() => (tr.style.opacity = 1));
+          });
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      // Add key with server-side validation
+      async function addKey() {
+        let keyInput = document.getElementById("newKey");
+        let key = keyInput.value.trim().toUpperCase();
+        if (!key) return alert("Please enter a key!");
+
+        try {
+          const res = await fetch(API + "/add", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key }),
+          });
+          const result = await res.json();
+
+          if (result.success) {
+            keyInput.value = "";
+            fetchKeys(); // refresh table after successful add
+          } else {
+            alert(result.message); // shows "Key already exists" or DB error
+          }
+        } catch (err) {
+          console.error(err);
+          alert("Server error");
+        }
+      }
+
+      // Revoke key
+      async function revokeKey(key, btn) {
+        try {
+          const res = await fetch(API + "/revoke", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: key.trim().toUpperCase() }),
+          });
+          const result = await res.json();
+          if (result.success) {
+            fetchKeys();
+          } else {
+            alert(result.message);
+          }
+        } catch (err) {
+          console.error(err);
+          alert("Server error");
+        }
+      }
+
+      // Update note
+      async function updateNote(key, note) {
+        try {
+          await fetch(API + "/note", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: key.trim().toUpperCase(), note }),
+          });
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      document.getElementById("addKey").addEventListener("click", addKey);
+      fetchKeys();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,142 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', sans-serif;
+    background: #f5f6fa;
+    color: #2d3436;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px;
+  }
+
+  h1 {
+    font-weight: 700;
+    font-size: 2rem;
+    margin-bottom: 30px;
+    color: #0984e3;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  }
+
+  /* --- Panel Container --- */
+  .panel {
+    width: 100%;
+    max-width: 950px;
+    background: #ffffff;
+    border-radius: 16px;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.08);
+    padding: 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* --- Table --- */
+  table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    transition: all 0.3s ease;
+  }
+
+  th, td {
+    padding: 15px 20px;
+    text-align: left;
+    transition: background 0.3s ease;
+  }
+
+  th {
+    background: linear-gradient(135deg,#0984e3,#74b9ff);
+    color: #fff;
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  tr:nth-child(even) { background: #f1f3f6; }
+  tr:hover { background: #dfe6e9; }
+
+  td.status {
+    font-weight: 600;
+    color: #2d3436;
+  }
+
+  td.status.active { color: #00b894; }
+  td.status.inactive { color: #d63031; }
+
+  td.notes input {
+    width: 100%;
+    padding: 6px 10px;
+    border-radius: 10px;
+    border: 1px solid #dfe6e9;
+    font-size: 13px;
+    transition: border 0.2s;
+  }
+
+  td.notes input:focus {
+    border: 2px solid #0984e3;
+    outline: none;
+  }
+
+  /* --- Buttons --- */
+  .btn {
+    padding: 10px 18px;
+    border: none;
+    border-radius: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  }
+
+  .btn-add {
+    background: linear-gradient(135deg,#00b894,#00d08c);
+    color: white;
+  }
+  .btn-add:hover {
+    background: linear-gradient(135deg,#00d08c,#00b894);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+  }
+
+  .btn-revoke {
+    background: linear-gradient(135deg,#d63031,#ff7675);
+    color: white;
+  }
+  .btn-revoke:hover {
+    background: linear-gradient(135deg,#ff7675,#d63031);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+  }
+
+  /* --- Input Field --- */
+  input[type="text"].newKey {
+    padding: 10px 14px;
+    border-radius: 12px;
+    border: 1px solid #dfe6e9;
+    font-size: 14px;
+    width: 250px;
+    margin-right: 10px;
+    outline: none;
+    transition: border 0.2s;
+  }
+
+  input[type="text"].newKey:focus {
+    border: 2px solid #0984e3;
+  }
+
+  /* --- Controls Row --- */
+  .controls {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  /* --- Responsive --- */
+  @media(max-width:600px){
+    .controls { flex-direction: column; align-items: stretch; }
+    input[type="text"].newKey { width: 100%; }
+  }
