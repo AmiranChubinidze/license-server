@@ -1,19 +1,12 @@
 const { Sequelize } = require("sequelize");
-const path = require("path");
 
-const isProduction = process.env.NODE_ENV === "production";
+const DATABASE_URL =
+  process.env.DATABASE_URL ||
+  "postgresql://licenses_db_htbf_user:gODMDR7UwEOR1C1phPMzwVTqjespYxKr@dpg-d334mgmmcj7s73a2iri0-a/licenses_db_htbf";
 
-const sequelize = isProduction
-  ? new Sequelize(process.env.DATABASE_URL, {
-      dialect: "postgres",
-      protocol: "postgres",
-      logging: false,
-      dialectOptions: { ssl: { require: true, rejectUnauthorized: false } },
-    })
-  : new Sequelize({
-      dialect: "sqlite",
-      storage: path.join(__dirname, "licenses.db"),
-      logging: false,
-    });
+const sequelize = new Sequelize(DATABASE_URL, {
+  dialect: "postgres",
+  logging: false, // change to console.log for debugging
+});
 
 module.exports = sequelize;

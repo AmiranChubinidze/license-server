@@ -1,43 +1,51 @@
-// server.js
 const express = require("express");
 const bodyParser = require("body-parser");
 const path = require("path");
 const cors = require("cors");
 
-const sequelize = require("./db"); // our Sequelize setup
-const License = require("./license"); // License model
+const sequelize = require("./db");
+const License = require("./models/license");
 
 const app = express();
 
-// Middleware
+app.use(cors());
 app.use(bodyParser.json());
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type"],
-}));
+app.use(express.static(__dirname));
 
-// --- Add test keys if table is empty ---
+// --- Initialize database ---
 (async () => {
-  const count = await License.count();
-  if (count === 0) {
-    await License.bulkCreate([
-      { key: "TEST123" },
-      { key: "ABC456" },
-    ]);
-    console.log("✅ Test keys added");
+  try {
+    await sequelize.authenticate();
+    console.log("✅ Database connected");
+
+    await License.sync(); // creates table if missing
+    console.log("✅ Licenses table ready");
+
+    // Optional: add test keys if table is empty
+    const count = await License.count();
+    if (count === 0) {
+      await License.bulkCreate([
+        { key: "TEST123" },
+        { key: "ABC456" },
+      ]);
+      console.log("✅ Test keys added");
+    }
+  } catch (err) {
+    console.error("❌ DB connection failed:", err);
   }
 })();
 
-// --- Validate license ---
+// --- License validation endpoint ---
 app.post("/validate", async (req, res) => {
   const key = (req.body.key || "").trim().toUpperCase();
   const deviceId = (req.body.deviceId || "").trim();
 
-  if (!key || !deviceId) return res.json({ valid: false, message: "Missing key or deviceId" });
+  if (!key || !deviceId)
+    return res.json({ valid: false, message: "Missing key or deviceId" });
 
   try {
-    const license = await License.findByPk(key);
+    let license = await License.findByPk(key);
+
     if (!license) return res.json({ valid: false, message: "Invalid key" });
 
     if (!license.deviceId) {
@@ -47,9 +55,15 @@ app.post("/validate", async (req, res) => {
     }
 
     if (license.deviceId === deviceId)
-      return res.json({ valid: true, message: "Key already activated on this device" });
+      return res.json({
+        valid: true,
+        message: "Key already activated on this device",
+      });
 
-    return res.json({ valid: false, message: "Key already used on another device" });
+    return res.json({
+      valid: false,
+      message: "Key already used on another device",
+    });
   } catch (err) {
     console.error(err);
     return res.json({ valid: false, message: "Server error" });
@@ -57,19 +71,13 @@ app.post("/validate", async (req, res) => {
 });
 
 // --- Serve admin panel ---
-app.use(express.static(__dirname));
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "admin.html")));
 
 // --- Admin endpoints ---
 // List keys
 app.get("/admin/list", async (req, res) => {
-  try {
-    const rows = await License.findAll({ order: [["key", "ASC"]] });
-    res.json(rows);
-  } catch (err) {
-    console.error(err);
-    res.json([]);
-  }
+  const licenses = await License.findAll({ order: [["key", "ASC"]] });
+  res.json(licenses);
 });
 
 // Add key
@@ -79,7 +87,7 @@ app.post("/admin/add", async (req, res) => {
 
   try {
     const [license, created] = await License.findOrCreate({ where: { key } });
-    if (!created) return res.json({ success: false, message: "Key already exists" });
+    if (!created) return res.json({ success: false, message: "Key exists" });
     res.json({ success: true, message: "Key added" });
   } catch (err) {
     console.error(err);
@@ -93,8 +101,8 @@ app.post("/admin/revoke", async (req, res) => {
   if (!key) return res.json({ success: false, message: "Missing key" });
 
   try {
-    const count = await License.destroy({ where: { key } });
-    if (!count) return res.json({ success: false, message: "Key not found" });
+    const deleted = await License.destroy({ where: { key } });
+    if (!deleted) return res.json({ success: false, message: "Key not found" });
     res.json({ success: true, message: "Key revoked" });
   } catch (err) {
     console.error(err);
@@ -122,4 +130,6 @@ app.post("/admin/note", async (req, res) => {
 
 // --- Start server ---
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, "0.0.0.0", () =>
+  console.log(`✅ Server running on port ${PORT}`)
+);
