@@ -1,67 +1,59 @@
+// server.js
 const express = require("express");
 const bodyParser = require("body-parser");
-const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 const cors = require("cors");
 
-// --- Initialize app ---
+const sequelize = require("./db"); // our Sequelize setup
+const License = require("./license"); // License model
+
 const app = express();
 
-// --- CORS middleware ---
+// Middleware
+app.use(bodyParser.json());
 app.use(cors({
-  origin: true, // reflect request origin, works with chrome-extension://
+  origin: "*",
   methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type"]
+  allowedHeaders: ["Content-Type"],
 }));
 
-// --- Body parser ---
-app.use(bodyParser.json());
-
-// --- SQLite database ---
-const db = new sqlite3.Database(path.join(__dirname, "licenses.db"), (err) => {
-  if (err) console.error(err);
-  else console.log("Connected to SQLite database.");
-});
-
-// --- Ensure licenses table exists ---
-db.run(`
-  CREATE TABLE IF NOT EXISTS licenses (
-    key TEXT PRIMARY KEY,
-    deviceId TEXT,
-    notes TEXT DEFAULT ''
-  )
-`, (err) => {
-  if (err) console.error(err);
-  else console.log("Licenses table ready.");
-});
-
-// --- Add test keys (optional) ---
-/* const testKeys = ["TEST123", "ABC456"];
-testKeys.forEach(k => {
-  const key = k.trim().toUpperCase();
-  db.run("INSERT OR IGNORE INTO licenses (key, deviceId, notes) VALUES (?, NULL, '')", [key]);
-}); */
+// --- Add test keys if table is empty ---
+(async () => {
+  const count = await License.count();
+  if (count === 0) {
+    await License.bulkCreate([
+      { key: "TEST123" },
+      { key: "ABC456" },
+    ]);
+    console.log("✅ Test keys added");
+  }
+})();
 
 // --- Validate license ---
-app.post("/validate", (req, res) => {
-  let key = (req.body.key || "").trim().toUpperCase();
+app.post("/validate", async (req, res) => {
+  const key = (req.body.key || "").trim().toUpperCase();
   const deviceId = (req.body.deviceId || "").trim();
 
   if (!key || !deviceId) return res.json({ valid: false, message: "Missing key or deviceId" });
 
-  db.get("SELECT deviceId FROM licenses WHERE key = ?", [key], (err, row) => {
-    if (err) return res.json({ valid: false, message: "Server error" });
-    if (!row) return res.json({ valid: false, message: "Invalid key" });
+  try {
+    const license = await License.findByPk(key);
+    if (!license) return res.json({ valid: false, message: "Invalid key" });
 
-    if (!row.deviceId) {
-      db.run("UPDATE licenses SET deviceId = ? WHERE key = ?", [deviceId, key]);
+    if (!license.deviceId) {
+      license.deviceId = deviceId;
+      await license.save();
       return res.json({ valid: true, message: "Key activated" });
     }
 
-    if (row.deviceId === deviceId) return res.json({ valid: true, message: "Key already activated on this device" });
+    if (license.deviceId === deviceId)
+      return res.json({ valid: true, message: "Key already activated on this device" });
 
     return res.json({ valid: false, message: "Key already used on another device" });
-  });
+  } catch (err) {
+    console.error(err);
+    return res.json({ valid: false, message: "Server error" });
+  }
 });
 
 // --- Serve admin panel ---
@@ -70,50 +62,62 @@ app.get("/", (req, res) => res.sendFile(path.join(__dirname, "admin.html")));
 
 // --- Admin endpoints ---
 // List keys
-app.get("/admin/list", (req, res) => {
-  db.all("SELECT * FROM licenses ORDER BY key ASC", [], (err, rows) => {
-    if (err) return res.json([]);
+app.get("/admin/list", async (req, res) => {
+  try {
+    const rows = await License.findAll({ order: [["key", "ASC"]] });
     res.json(rows);
-  });
+  } catch (err) {
+    console.error(err);
+    res.json([]);
+  }
 });
 
 // Add key
-app.post("/admin/add", (req, res) => {
-  let key = (req.body.key || "").trim().toUpperCase();
+app.post("/admin/add", async (req, res) => {
+  const key = (req.body.key || "").trim().toUpperCase();
   if (!key) return res.json({ success: false, message: "Missing key" });
 
-  db.run(
-    "INSERT OR IGNORE INTO licenses (key, deviceId, notes) VALUES (?, NULL, '')",
-    [key],
-    function (err) {
-      if (err) return res.json({ success: false, message: "DB error" });
-      if (this.changes === 0) return res.json({ success: false, message: "Key already exists" });
-      res.json({ success: true, message: "Key added" });
-    }
-  );
+  try {
+    const [license, created] = await License.findOrCreate({ where: { key } });
+    if (!created) return res.json({ success: false, message: "Key already exists" });
+    res.json({ success: true, message: "Key added" });
+  } catch (err) {
+    console.error(err);
+    res.json({ success: false, message: "DB error" });
+  }
 });
 
 // Revoke key
-app.post("/admin/revoke", (req, res) => {
-  let key = (req.body.key || "").trim().toUpperCase();
+app.post("/admin/revoke", async (req, res) => {
+  const key = (req.body.key || "").trim().toUpperCase();
   if (!key) return res.json({ success: false, message: "Missing key" });
 
-  db.run("DELETE FROM licenses WHERE key = ?", [key], function (err) {
-    if (err) return res.json({ success: false, message: "DB error" });
+  try {
+    const count = await License.destroy({ where: { key } });
+    if (!count) return res.json({ success: false, message: "Key not found" });
     res.json({ success: true, message: "Key revoked" });
-  });
+  } catch (err) {
+    console.error(err);
+    res.json({ success: false, message: "DB error" });
+  }
 });
 
 // Update notes
-app.post("/admin/note", (req, res) => {
-  let key = (req.body.key || "").trim().toUpperCase();
+app.post("/admin/note", async (req, res) => {
+  const key = (req.body.key || "").trim().toUpperCase();
   const note = req.body.note || "";
   if (!key) return res.json({ success: false, message: "Missing key" });
 
-  db.run("UPDATE licenses SET notes = ? WHERE key = ?", [note, key], function (err) {
-    if (err) return res.json({ success: false, message: "DB error" });
+  try {
+    const license = await License.findByPk(key);
+    if (!license) return res.json({ success: false, message: "Key not found" });
+    license.notes = note;
+    await license.save();
     res.json({ success: true, message: "Note updated" });
-  });
+  } catch (err) {
+    console.error(err);
+    res.json({ success: false, message: "DB error" });
+  }
 });
 
 // --- Start server ---
