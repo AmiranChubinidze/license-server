@@ -36,11 +36,11 @@ db.run(`
 });
 
 // --- Add test keys (optional) ---
-const testKeys = ["TEST123", "ABC456"];
+/* const testKeys = ["TEST123", "ABC456"];
 testKeys.forEach(k => {
   const key = k.trim().toUpperCase();
   db.run("INSERT OR IGNORE INTO licenses (key, deviceId, notes) VALUES (?, NULL, '')", [key]);
-});
+}); */
 
 // --- Validate license ---
 app.post("/validate", (req, res) => {
