@@ -22,14 +22,14 @@ app.use(express.static(__dirname));
     console.log("✅ Licenses table ready");
 
     // Optional: add test keys if table is empty
-    const count = await License.count();
+    /* const count = await License.count();
     if (count === 0) {
       await License.bulkCreate([
         { key: "TEST123" },
         { key: "ABC456" },
       ]);
       console.log("✅ Test keys added");
-    }
+    } */
   } catch (err) {
     console.error("❌ DB connection failed:", err);
   }
