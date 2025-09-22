@@ -11,9 +11,11 @@ const app = express();
 // --- Security: Allow only extension + your domain ---
 const EXTENSION_ID = "hgbnnmlafbdekjoncpipgaeafjbknncg";
 
-const allowedOrigins = [
+cconst allowedOrigins = [
   `chrome-extension://${EXTENSION_ID}`,
   "https://amnairi.online",
+  "http://localhost:3000", // for testing from your browser/admin panel
+  "http://127.0.0.1:3000", // sometimes used
 ];
 
 app.use(
@@ -30,6 +32,7 @@ app.use(
     },
   })
 );
+
 
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
