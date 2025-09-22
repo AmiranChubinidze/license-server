@@ -8,9 +8,31 @@ const License = require("./models/license");
 
 const app = express();
 
+// --- Secrets for protection ---
+const EXTENSION_SECRET = process.env.EXTENSION_SECRET || "EXTENSION_SECRET_123";
+const ADMIN_SECRET = process.env.ADMIN_SECRET || "ADMIN_SECRET_456";
+
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
+
+// --- Middleware for extension-only endpoints ---
+function verifyExtensionToken(req, res, next) {
+  const token = req.headers["x-extension-token"];
+  if (!token || token !== EXTENSION_SECRET) {
+    return res.status(403).json({ success: false, message: "Forbidden" });
+  }
+  next();
+}
+
+// --- Middleware for admin-only endpoints ---
+function verifyAdminToken(req, res, next) {
+  const token = req.headers["x-admin-token"];
+  if (!token || token !== ADMIN_SECRET) {
+    return res.status(403).json({ success: false, message: "Admin Forbidden" });
+  }
+  next();
+}
 
 // --- Initialize database ---
 (async () => {
@@ -20,23 +42,13 @@ app.use(express.static(__dirname));
 
     await License.sync(); // creates table if missing
     console.log("✅ Licenses table ready");
-
-    // Optional: add test keys if table is empty
-    /* const count = await License.count();
-    if (count === 0) {
-      await License.bulkCreate([
-        { key: "TEST123" },
-        { key: "ABC456" },
-      ]);
-      console.log("✅ Test keys added");
-    } */
   } catch (err) {
     console.error("❌ DB connection failed:", err);
   }
 })();
 
-// --- License validation endpoint ---
-app.post("/validate", async (req, res) => {
+// --- License validation endpoint (EXTENSION ONLY) ---
+app.post("/validate", verifyExtensionToken, async (req, res) => {
   const key = (req.body.key || "").trim().toUpperCase();
   const deviceId = (req.body.deviceId || "").trim();
 
@@ -70,18 +82,21 @@ app.post("/validate", async (req, res) => {
   }
 });
 
-// --- Serve admin panel ---
-app.get("/", (req, res) => res.sendFile(path.join(__dirname, "admin.html")));
+// --- Serve admin panel (ADMIN ONLY) ---
+app.get("/", verifyAdminToken, (req, res) =>
+  res.sendFile(path.join(__dirname, "admin.html"))
+);
 
-// --- Admin endpoints ---
+// --- Admin endpoints (ADMIN ONLY) ---
+
 // List keys
-app.get("/admin/list", async (req, res) => {
+app.get("/admin/list", verifyAdminToken, async (req, res) => {
   const licenses = await License.findAll({ order: [["key", "ASC"]] });
   res.json(licenses);
 });
 
 // Add key
-app.post("/admin/add", async (req, res) => {
+app.post("/admin/add", verifyAdminToken, async (req, res) => {
   const key = (req.body.key || "").trim().toUpperCase();
   if (!key) return res.json({ success: false, message: "Missing key" });
 
@@ -96,7 +111,7 @@ app.post("/admin/add", async (req, res) => {
 });
 
 // Revoke key
-app.post("/admin/revoke", async (req, res) => {
+app.post("/admin/revoke", verifyAdminToken, async (req, res) => {
   const key = (req.body.key || "").trim().toUpperCase();
   if (!key) return res.json({ success: false, message: "Missing key" });
 
@@ -111,7 +126,7 @@ app.post("/admin/revoke", async (req, res) => {
 });
 
 // Update notes
-app.post("/admin/note", async (req, res) => {
+app.post("/admin/note", verifyAdminToken, async (req, res) => {
   const key = (req.body.key || "").trim().toUpperCase();
   const note = req.body.note || "";
   if (!key) return res.json({ success: false, message: "Missing key" });
