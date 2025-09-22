@@ -2,15 +2,35 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const path = require("path");
 const cors = require("cors");
+const basicAuth = require("express-basic-auth");
 
 const sequelize = require("./db");
 const License = require("./models/license");
 
 const app = express();
 
+// --- Middlewares ---
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
+
+// --- Admin Basic Auth ---
+app.use(
+  "/admin",
+  basicAuth({
+    users: { [process.env.ADMIN_USER]: process.env.ADMIN_PASS },
+    challenge: true,
+    unauthorizedResponse: "Unauthorized",
+  })
+);
+app.use(
+  "/",
+  basicAuth({
+    users: { [process.env.ADMIN_USER]: process.env.ADMIN_PASS },
+    challenge: true,
+    unauthorizedResponse: "Unauthorized",
+  })
+);
 
 // --- Initialize database ---
 (async () => {
@@ -35,7 +55,7 @@ app.use(express.static(__dirname));
   }
 })();
 
-// --- License validation endpoint ---
+// --- License validation endpoint (open to extension) ---
 app.post("/validate", async (req, res) => {
   const key = (req.body.key || "").trim().toUpperCase();
   const deviceId = (req.body.deviceId || "").trim();
@@ -76,8 +96,13 @@ app.get("/", (req, res) => res.sendFile(path.join(__dirname, "admin.html")));
 // --- Admin endpoints ---
 // List keys
 app.get("/admin/list", async (req, res) => {
-  const licenses = await License.findAll({ order: [["key", "ASC"]] });
-  res.json(licenses);
+  try {
+    const licenses = await License.findAll({ order: [["key", "ASC"]] });
+    res.json(licenses);
+  } catch (err) {
+    console.error(err);
+    res.json({ success: false, message: "DB error" });
+  }
 });
 
 // Add key
@@ -113,7 +138,7 @@ app.post("/admin/revoke", async (req, res) => {
 // Update notes
 app.post("/admin/note", async (req, res) => {
   const key = (req.body.key || "").trim().toUpperCase();
-  const note = req.body.note || "";
+  const note = (req.body.note || "");
   if (!key) return res.json({ success: false, message: "Missing key" });
 
   try {
