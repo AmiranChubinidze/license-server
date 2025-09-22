@@ -9,28 +9,17 @@ const License = require("./models/license");
 
 const app = express();
 
-// --- Middlewares ---
+// --- Middleware ---
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
 
-// --- Admin Basic Auth ---
-app.use(
-  "/admin",
-  basicAuth({
-    users: { [process.env.ADMIN_USER]: process.env.ADMIN_PASS },
-    challenge: true,
-    unauthorizedResponse: "Unauthorized",
-  })
-);
-app.use(
-  "/",
-  basicAuth({
-    users: { [process.env.ADMIN_USER]: process.env.ADMIN_PASS },
-    challenge: true,
-    unauthorizedResponse: "Unauthorized",
-  })
-);
+// --- Admin authentication ---
+// Only protect /admin routes
+app.use("/admin", basicAuth({
+  users: { 'admin': process.env.ADMIN_PASSWORD || "yourStrongPassword" },
+  challenge: true
+}));
 
 // --- Initialize database ---
 (async () => {
@@ -55,7 +44,7 @@ app.use(
   }
 })();
 
-// --- License validation endpoint (open to extension) ---
+// --- License validation endpoint (open for extension) ---
 app.post("/validate", async (req, res) => {
   const key = (req.body.key || "").trim().toUpperCase();
   const deviceId = (req.body.deviceId || "").trim();
@@ -77,12 +66,12 @@ app.post("/validate", async (req, res) => {
     if (license.deviceId === deviceId)
       return res.json({
         valid: true,
-        message: "Key already activated on this device",
+        message: "Key already activated on this device"
       });
 
     return res.json({
       valid: false,
-      message: "Key already used on another device",
+      message: "Key already used on another device"
     });
   } catch (err) {
     console.error(err);
@@ -138,7 +127,7 @@ app.post("/admin/revoke", async (req, res) => {
 // Update notes
 app.post("/admin/note", async (req, res) => {
   const key = (req.body.key || "").trim().toUpperCase();
-  const note = (req.body.note || "");
+  const note = req.body.note || "";
   if (!key) return res.json({ success: false, message: "Missing key" });
 
   try {
