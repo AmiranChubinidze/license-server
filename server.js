@@ -8,32 +8,7 @@ const License = require("./models/license");
 
 const app = express();
 
-// --- Security: Allow only extension + your domain ---
-const EXTENSION_ID = "hgbnnmlafbdekjoncpipgaeafjbknncg";
-
-const allowedOrigins = [
-  `chrome-extension://${EXTENSION_ID}`,
-  "https://amnairi.online",
-  "http://localhost:3000", // for testing from your browser/admin panel
-  "http://127.0.0.1:3000", // sometimes used
-];
-
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // Allow requests with no origin (extensions sometimes send none)
-      if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      } else {
-        return callback(new Error("Not allowed by CORS"));
-      }
-    },
-  })
-);
-
-
+app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(__dirname));
 
@@ -45,6 +20,16 @@ app.use(express.static(__dirname));
 
     await License.sync(); // creates table if missing
     console.log("✅ Licenses table ready");
+
+    // Optional: add test keys if table is empty
+    /* const count = await License.count();
+    if (count === 0) {
+      await License.bulkCreate([
+        { key: "TEST123" },
+        { key: "ABC456" },
+      ]);
+      console.log("✅ Test keys added");
+    } */
   } catch (err) {
     console.error("❌ DB connection failed:", err);
   }
