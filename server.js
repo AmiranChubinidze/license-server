@@ -11,7 +11,7 @@ const app = express();
 // --- Security: Allow only extension + your domain ---
 const EXTENSION_ID = "hgbnnmlafbdekjoncpipgaeafjbknncg";
 
-cconst allowedOrigins = [
+const allowedOrigins = [
   `chrome-extension://${EXTENSION_ID}`,
   "https://amnairi.online",
   "http://localhost:3000", // for testing from your browser/admin panel
