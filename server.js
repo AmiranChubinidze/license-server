@@ -67,10 +67,19 @@ async function findActiveUser(su) {
   );
 }
 
-function issueToken({ su, company_name: label }) {
-  const payload = { su, label };
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "24h" });
+function issueToken(user, options = {}) {
+  const payload = {
+    su: user.su,
+    name: user.company_name,
+    type: options.type ?? "access",
+  };
+  const expiresIn =
+    options.expiresIn ?? (payload.type === "refresh" ? "30d" : "24h");
+  return jwt.sign(payload, JWT_SECRET, { expiresIn });
 }
+
+const issueAccessToken = (user) => issueToken(user, { type: "access", expiresIn: "24h" });
+const issueRefreshToken = (user) => issueToken(user, { type: "refresh", expiresIn: "30d" });
 
 function decodeToken(token, options = {}) {
   return jwt.verify(token, JWT_SECRET, options);
@@ -210,11 +219,12 @@ app.post("/login", async (req, res) => {
         .json({ success: false, message: "არასწორი მომხმარებელი ან პაროლი" });
     }
 
-    const token = issueToken(user);
+    const token = issueAccessToken(user);
+    const refreshToken = issueRefreshToken(user);
     return res.json({
       success: true,
       token,
-      refreshToken: null,
+      refreshToken,
       user: serializeUser(user),
     });
   } catch (err) {
@@ -251,17 +261,21 @@ app.post("/refresh", async (req, res) => {
 
   try {
     const decoded = decodeToken(incoming);
+    if (decoded.type && decoded.type !== "refresh") {
+      return res.status(400).json({ success: false, message: "Refresh token required" });
+    }
     const user = await findActiveUser(decoded.su);
 
     if (!user || !user.active) {
       return res.status(401).json({ success: false, message: "User revoked or not found" });
     }
 
-    const newToken = issueToken(user);
+    const newToken = issueAccessToken(user);
+    const newRefreshToken = issueRefreshToken(user);
     return res.json({
       success: true,
       token: newToken,
-      refreshToken: null,
+      refreshToken: newRefreshToken,
       user: serializeUser(user),
     });
   } catch (err) {
@@ -416,9 +430,11 @@ initDb()
       const a = Number(process.env.STUB_SOAP_AMOUNT || 12345.67);
       console.log(`[STUB] SOAP disabled; returning total = ${a.toFixed(2)}`);
     }
-    app.listen(PORT, "0.0.0.0", () => {
+    const server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on ${PORT}`);
     });
+    server.keepAliveTimeout = 120000;
+    server.headersTimeout = 125000;
   })
   .catch((err) => {
     console.error("DB initialization failed:", err);
