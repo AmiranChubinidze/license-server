@@ -4,7 +4,7 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
-const { run, get, all } = require("./db");
+const { db, run, get, all } = require("./db");
 
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
@@ -18,6 +18,10 @@ const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
 const ADMIN_KEY = process.env.ADMIN_KEY || "change_this_admin_key";
 
 async function initDb() {
+  if (!db) {
+    console.error("Database not initialized; skipping migrations.");
+    return;
+  }
   await run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,7 +176,16 @@ async function fetchWaybillTotal({ su, sp }, monthKey) {
   }
 }
 
+function ensureDatabase(res) {
+  if (!db) {
+    res.status(500).json({ success: false, error: "Database not initialized" });
+    return false;
+  }
+  return true;
+}
+
 app.post("/auth", async (req, res) => {
+  if (!ensureDatabase(res)) return;
   const su = (req.body?.su || "").trim();
   const sp = (req.body?.sp || "").trim();
 
@@ -203,6 +216,7 @@ app.post("/auth", async (req, res) => {
 });
 
 app.post("/login", async (req, res) => {
+  if (!ensureDatabase(res)) return;
   const su = (req.body?.su || "").trim();
   const sp = (req.body?.sp || "").trim();
 
@@ -234,6 +248,7 @@ app.post("/login", async (req, res) => {
 });
 
 app.get("/verify", async (req, res) => {
+  if (!ensureDatabase(res)) return;
   const token = extractToken(req);
   if (!token) {
     return res.status(400).json({ valid: false, message: "Missing token" });
@@ -254,6 +269,7 @@ app.get("/verify", async (req, res) => {
 });
 
 app.post("/refresh", async (req, res) => {
+  if (!ensureDatabase(res)) return;
   const incoming = extractToken(req);
   if (!incoming) {
     return res.status(400).json({ success: false, message: "Missing token" });
@@ -284,6 +300,7 @@ app.post("/refresh", async (req, res) => {
 });
 
 app.post("/auth/refresh", async (req, res) => {
+  if (!ensureDatabase(res)) return;
   const token = req.body?.token;
   if (!token) {
     return res.status(400).json({ message: "Missing token" });
@@ -306,6 +323,7 @@ app.post("/auth/refresh", async (req, res) => {
 });
 
 app.post("/validateToken", async (req, res) => {
+  if (!ensureDatabase(res)) return;
   const token = req.body?.token;
   if (!token) {
     return res.json({ valid: false, message: "Missing token" });
@@ -330,6 +348,7 @@ app.post("/validateToken", async (req, res) => {
 });
 
 app.post("/waybill/total", async (req, res) => {
+  if (!ensureDatabase(res)) return;
   const token = extractToken(req);
   const month = req.body?.month;
   if (!token) {
@@ -353,6 +372,7 @@ app.post("/waybill/total", async (req, res) => {
 });
 
 app.get("/admin/users", requireAdmin, async (req, res) => {
+  if (!ensureDatabase(res)) return;
   try {
     const users = await all(
       "SELECT id, su, company_name, active, created_at, updated_at FROM users ORDER BY company_name ASC"
@@ -365,6 +385,7 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
 });
 
 app.post("/admin/addUser", requireAdmin, async (req, res) => {
+  if (!ensureDatabase(res)) return;
   const su = (req.body?.su || "").trim();
   const sp = (req.body?.sp || "").trim();
   const companyName = (req.body?.company_name || "").trim();
@@ -393,6 +414,7 @@ app.post("/admin/addUser", requireAdmin, async (req, res) => {
 });
 
 app.post("/admin/revokeUser", requireAdmin, async (req, res) => {
+  if (!ensureDatabase(res)) return;
   const su = (req.body?.su || "").trim();
   if (!su) {
     return res.status(400).json({ success: false, message: "Missing SU" });
@@ -422,6 +444,15 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, timestamp: Date.now() });
 });
 
+app.use((err, _req, res, _next) => {
+  console.error("Unhandled error:", err);
+  const status = err?.status || err?.statusCode || 500;
+  res.status(status).json({
+    success: false,
+    error: err?.message || "Internal server error",
+  });
+});
+
 const PORT = process.env.PORT || 3000;
 
 initDb()
@@ -438,5 +469,4 @@ initDb()
   })
   .catch((err) => {
     console.error("DB initialization failed:", err);
-    process.exit(1);
   });
