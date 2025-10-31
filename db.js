@@ -1,12 +1,40 @@
-const { Sequelize } = require("sequelize");
+const path = require("path");
+const sqlite3 = require("sqlite3").verbose();
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ||
-  "postgresql://licenses_db_htbf_user:gODMDR7UwEOR1C1phPMzwVTqjespYxKr@dpg-d334mgmmcj7s73a2iri0-a/licenses_db_htbf";
+const DB_PATH =
+  process.env.SQLITE_PATH ||
+  path.join(__dirname, "amnairi.db");
 
-const sequelize = new Sequelize(DATABASE_URL, {
-  dialect: "postgres",
-  logging: false, // change to console.log for debugging
+const db = new sqlite3.Database(DB_PATH, (err) => {
+  if (err) {
+    console.error("SQLite connection failed:", err);
+  } else {
+    console.log("SQLite connected:", DB_PATH);
+  }
 });
 
-module.exports = sequelize;
+const run = (sql, params = []) =>
+  new Promise((resolve, reject) => {
+    db.run(sql, params, function onRun(err) {
+      if (err) reject(err);
+      else resolve(this);
+    });
+  });
+
+const get = (sql, params = []) =>
+  new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+
+const all = (sql, params = []) =>
+  new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+
+module.exports = { db, run, get, all, DB_PATH };

@@ -1,149 +1,290 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ka">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>License Admin Panel</title>
-    <link rel="stylesheet" href="admin.css" />
+    <title>Amnairi RS Accounts</title>
+    <link rel="stylesheet" href="./admin.css" />
   </head>
   <body>
-    <h1>License Admin Panel</h1>
-    <div class="panel">
-      <!-- Add Key Row -->
-      <div class="controls">
-        <input
-          type="text"
-          id="newKey"
-          class="newKey"
-          placeholder="Enter new license key"
-        />
-        <button class="btn btn-add" id="addKey">Add Key</button>
-      </div>
+    <main class="admin-shell">
+      <header class="admin-header">
+        <div>
+          <h1>Amnairi RS Accounts</h1>
+          <p class="subtitle">მართე ძირითადი და ქვე-ანგარიშები უსაფრთხოდ.</p>
+        </div>
+      </header>
 
-      <!-- License Table -->
-      <table id="licenseTable">
-        <thead>
-          <tr>
-            <th>Key</th>
-            <th>Device ID</th>
-            <th>Status</th>
-            <th>Notes</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          <!-- Rows populated dynamically -->
-        </tbody>
-      </table>
-    </div>
+      <section class="card">
+        <form id="admin-key-form" class="form-inline" autocomplete="off">
+          <label for="adminKey">Admin Key</label>
+          <input
+            type="password"
+            id="adminKey"
+            placeholder="შეიყვანეთ საიდუმლო გასაღები"
+            required
+          />
+          <button type="submit">დადასტურება</button>
+        </form>
+        <p class="hint">
+          გასაღები ინახება მხოლოდ ამ ბრაუზერის სესიის განმავლობაში.
+        </p>
+      </section>
+
+      <section class="card" id="add-user-card" hidden>
+        <h2>➕ დამატება</h2>
+        <form id="add-user-form" autocomplete="off">
+          <div class="field-row">
+            <label for="suInput">მომხმარებელი (SU)</label>
+            <input id="suInput" name="su" maxlength="64" required />
+          </div>
+          <div class="field-row">
+            <label for="spInput">პაროლი (SP)</label>
+            <input
+              id="spInput"
+              name="sp"
+              type="password"
+              maxlength="64"
+              required
+            />
+          </div>
+          <div class="field-row">
+            <label for="labelInput">კომპანიის დასახელება</label>
+            <input
+              id="labelInput"
+              name="company_name"
+              maxlength="128"
+              required
+            />
+          </div>
+          <div class="actions">
+            <button type="submit">შენახვა</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card" id="users-card" hidden>
+        <header class="card-header">
+          <h2>💼 ანგარიშები</h2>
+          <button id="refreshUsers" type="button" class="ghost">
+            განახლება
+          </button>
+        </header>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>კომპანია</th>
+                <th>SU</th>
+                <th>სტატუსი</th>
+                <th>განახლდა</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="usersTableBody">
+              <tr class="empty-state">
+                <td colspan="5">ანგარიშები ჯერ არ არის დამატებული.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <template id="user-row-template">
+      <tr>
+        <td class="company"></td>
+        <td class="su"></td>
+        <td class="status"></td>
+        <td class="updated"></td>
+        <td class="row-actions">
+          <button type="button" class="revoke">გათიშვა</button>
+        </td>
+      </tr>
+    </template>
 
     <script>
-      const API = "/admin";
+      const state = {
+        adminKey: "",
+      };
 
-      // Create table row
-      function createRow(row) {
-        const tr = document.createElement("tr");
-        tr.style.opacity = 0;
-        tr.innerHTML = `
-    <td>${row.key}</td>
-    <td>${row.deviceId || "None"}</td>
-    <td class="status ${row.deviceId ? "active" : "inactive"}">${
-          row.deviceId ? "Active" : "Inactive"
-        }</td>
-    <td class="notes">
-      <input type="text" value="${
-        row.notes || ""
-      }" placeholder="Add note" onchange="updateNote('${
-          row.key
-        }', this.value)" />
-    </td>
-    <td>
-      <button class="btn btn-revoke" onclick="revokeKey('${
-        row.key
-      }', this)">Revoke</button>
-    </td>
-  `;
-        return tr;
+      function setCardVisibility(enabled) {
+        document.getElementById("add-user-card").hidden = !enabled;
+        document.getElementById("users-card").hidden = !enabled;
       }
 
-      // Fetch and render keys
-      async function fetchKeys() {
-        try {
-          const res = await fetch(API + "/list");
-          const data = await res.json();
-          const tbody = document.querySelector("#licenseTable tbody");
-          tbody.innerHTML = "";
-          data.forEach((row) => {
-            const tr = createRow(row);
-            tbody.appendChild(tr);
-            requestAnimationFrame(() => (tr.style.opacity = 1));
+      function formatDate(ts) {
+        if (!ts) return "-";
+        const date = new Date(ts + "Z");
+        if (Number.isNaN(date.getTime())) return ts;
+        return date.toLocaleString("ka-GE", {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      }
+
+      function showToast(message, type = "info") {
+        const toast = document.createElement("div");
+        toast.className = `toast toast-${type}`;
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        requestAnimationFrame(() => toast.classList.add("visible"));
+        setTimeout(() => {
+          toast.classList.remove("visible");
+          toast.addEventListener("transitionend", () => toast.remove(), {
+            once: true,
           });
-        } catch (err) {
-          console.error(err);
+        }, 2400);
+      }
+
+      async function authorizedFetch(url, options = {}) {
+        if (!state.adminKey) {
+          throw new Error("Admin key is missing");
         }
+        const headers = {
+          "Content-Type": "application/json",
+          "x-admin-key": state.adminKey,
+          ...(options.headers || {}),
+        };
+        const response = await fetch(url, {
+          ...options,
+          headers,
+        });
+
+        if (response.status === 401) {
+          throw new Error("არასწორი Admin Key");
+        }
+        return response;
       }
 
-      // Add key with server-side validation
-      async function addKey() {
-        let keyInput = document.getElementById("newKey");
-        let key = keyInput.value.trim().toUpperCase();
-        if (!key) return alert("Please enter a key!");
+      function renderUsers(users) {
+        const tbody = document.getElementById("usersTableBody");
+        tbody.innerHTML = "";
+        if (!Array.isArray(users) || users.length === 0) {
+          const tr = document.createElement("tr");
+          tr.className = "empty-state";
+          tr.innerHTML = '<td colspan="5">ანგარიშები არ მოიძებნა.</td>';
+          tbody.appendChild(tr);
+          return;
+        }
 
+        const template = document.getElementById("user-row-template");
+        users.forEach((user) => {
+          const fragment = template.content.cloneNode(true);
+          fragment.querySelector(".company").textContent =
+            user.company_name || "-";
+          fragment.querySelector(".su").textContent = user.su;
+          const statusEl = fragment.querySelector(".status");
+          statusEl.textContent = user.active ? "აქტიური" : "გათიშული";
+          statusEl.className = `status ${user.active ? "ok" : "err"}`;
+          fragment.querySelector(".updated").textContent = formatDate(
+            user.updated_at || user.created_at
+          );
+          const revokeBtn = fragment.querySelector(".revoke");
+          revokeBtn.textContent = user.active ? "გათიშვა" : "უკვე გათიშულია";
+          revokeBtn.disabled = !user.active;
+          revokeBtn.dataset.su = user.su;
+          tbody.appendChild(fragment);
+        });
+      }
+
+      async function loadUsers() {
         try {
-          const res = await fetch(API + "/add", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key }),
-          });
-          const result = await res.json();
-
-          if (result.success) {
-            keyInput.value = "";
-            fetchKeys(); // refresh table after successful add
-          } else {
-            alert(result.message); // shows "Key already exists" or DB error
+          const res = await authorizedFetch("/admin/users");
+          const payload = await res.json();
+          if (!payload.success) {
+            showToast(payload.message || "ვერ მივიღეთ მონაცემები", "error");
+            return;
           }
+          renderUsers(payload.users);
         } catch (err) {
-          console.error(err);
-          alert("Server error");
+          showToast(err.message || "შეცდომა", "error");
+          renderUsers([]);
         }
       }
 
-      // Revoke key
-      async function revokeKey(key, btn) {
-        try {
-          const res = await fetch(API + "/revoke", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: key.trim().toUpperCase() }),
-          });
-          const result = await res.json();
-          if (result.success) {
-            fetchKeys();
-          } else {
-            alert(result.message);
+      document
+        .getElementById("admin-key-form")
+        .addEventListener("submit", (event) => {
+          event.preventDefault();
+          const key = event.target.adminKey.value.trim();
+          if (!key) return;
+          state.adminKey = key;
+          sessionStorage.setItem("adminKey", key);
+          setCardVisibility(true);
+          loadUsers();
+          showToast("ადმინისტრატორის გასაღები განახლდა", "ok");
+        });
+
+      document
+        .getElementById("add-user-form")
+        .addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = event.target;
+          const su = form.su.value.trim();
+          const sp = form.sp.value;
+          const companyName = form.company_name.value.trim();
+
+          if (!su || !sp || !companyName) return;
+
+          try {
+            const res = await authorizedFetch("/admin/addUser", {
+              method: "POST",
+              body: JSON.stringify({ su, sp, company_name: companyName }),
+            });
+            const payload = await res.json();
+            if (!payload.success) {
+              throw new Error(payload.message || "ვერ შევინახეთ");
+            }
+            showToast("ანგარიში შენახულია", "ok");
+            form.reset();
+            loadUsers();
+          } catch (err) {
+            showToast(err.message || "შეცდომა", "error");
           }
-        } catch (err) {
-          console.error(err);
-          alert("Server error");
-        }
-      }
+        });
 
-      // Update note
-      async function updateNote(key, note) {
-        try {
-          await fetch(API + "/note", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: key.trim().toUpperCase(), note }),
-          });
-        } catch (err) {
-          console.error(err);
-        }
-      }
+      document
+        .getElementById("usersTableBody")
+        .addEventListener("click", async (event) => {
+          if (!event.target.classList.contains("revoke")) return;
+          const su = event.target.dataset.su;
+          if (!su) return;
 
-      document.getElementById("addKey").addEventListener("click", addKey);
-      fetchKeys();
+          if (!confirm(`დარწმუნებული ხართ, რომ გათიშავთ ${su}?`)) return;
+
+          try {
+            const res = await authorizedFetch("/admin/revokeUser", {
+              method: "POST",
+              body: JSON.stringify({ su }),
+            });
+            const payload = await res.json();
+            if (!payload.success) {
+              throw new Error(payload.message || "ვერ გავთიშეთ");
+            }
+            showToast("ანგარიში გათიშულია", "warn");
+            loadUsers();
+          } catch (err) {
+            showToast(err.message || "შეცდომა", "error");
+          }
+        });
+
+      document
+        .getElementById("refreshUsers")
+        .addEventListener("click", loadUsers);
+
+      window.addEventListener("DOMContentLoaded", () => {
+        const saved = sessionStorage.getItem("adminKey");
+        if (saved) {
+          state.adminKey = saved;
+          document.getElementById("adminKey").value = saved;
+          setCardVisibility(true);
+          loadUsers();
+        }
+      });
     </script>
   </body>
 </html>
