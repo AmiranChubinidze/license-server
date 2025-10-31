@@ -1,40 +1,29 @@
 const path = require("path");
-const sqlite3 = require("sqlite3").verbose();
+const Database = require("better-sqlite3");
 
-const DB_PATH =
-  process.env.SQLITE_PATH ||
-  path.join(__dirname, "amnairi.db");
+const DB_PATH = process.env.SQLITE_PATH || path.join(__dirname, "amnairi.db");
 
-const db = new sqlite3.Database(DB_PATH, (err) => {
-  if (err) {
-    console.error("SQLite connection failed:", err);
-  } else {
-    console.log("SQLite connected:", DB_PATH);
-  }
+const db = new Database(DB_PATH, {
+fileMustExist: false,
+timeout: 5000,
 });
 
-const run = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.run(sql, params, function onRun(err) {
-      if (err) reject(err);
-      else resolve(this);
-    });
-  });
+function run(sql, params = []) {
+const stmt = db.prepare(sql);
+const info = stmt.run(...params);
+return Promise.resolve(info);
+}
 
-const get = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
+function get(sql, params = []) {
+const stmt = db.prepare(sql);
+const row = stmt.get(...params);
+return Promise.resolve(row);
+}
 
-const all = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
+function all(sql, params = []) {
+const stmt = db.prepare(sql);
+const rows = stmt.all(...params);
+return Promise.resolve(rows);
+}
 
 module.exports = { db, run, get, all, DB_PATH };
