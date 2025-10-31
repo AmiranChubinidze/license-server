@@ -14,8 +14,6 @@ require("dotenv").config({ path: path.join(__dirname, ".env") });
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
-app.use(express.static(__dirname));
-app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "admin.html")));
 
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
 const ADMIN_KEY = process.env.ADMIN_KEY || "change_this_admin_key";
@@ -217,7 +215,7 @@ app.post("/auth", async (req, res) => {
     return res.status(500).json({ valid: false, message: "Server error" });
   }
 });
-
+app.get("/ping", (_req, res) => res.json({ ok: true }))
 app.post("/login", async (req, res) => {
   if (!ensureDatabase(res)) return;
 
@@ -484,6 +482,9 @@ app.post("/admin/revokeUser", requireAdmin, async (req, res) => {
 app.get("/health", (_req, res) => {
   res.json({ ok: true, timestamp: Date.now() });
 });
+
+app.use(express.static(__dirname));
+app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "admin.html")));
 
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error:", err);
