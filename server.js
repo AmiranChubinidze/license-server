@@ -1,10 +1,13 @@
-﻿const path = require("path");
+const path = require("path");
+const fs = require("fs");
 const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
-const { db, run, get, all } = require("./db");
+const { db, run, get, all, DB_PATH } = require("./db");
+const dbExistsOnStartup = fs.existsSync(DB_PATH);
+console.log(`[DB] Path: ${DB_PATH} | exists: ${dbExistsOnStartup}`);
 
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
@@ -199,7 +202,7 @@ app.post("/auth", async (req, res) => {
     if (!user || !user.active || user.sp !== sp) {
       return res
         .status(401)
-        .json({ valid: false, message: "არასწორი მომხმარებელი ან პაროლი" });
+        .json({ valid: false, message: "???????? ???????????? ?? ??????" });
     }
 
     const token = issueToken(user);
@@ -217,8 +220,18 @@ app.post("/auth", async (req, res) => {
 
 app.post("/login", async (req, res) => {
   if (!ensureDatabase(res)) return;
-  const su = (req.body?.su || "").trim();
-  const sp = (req.body?.sp || "").trim();
+
+  const body = req.body || {};
+  console.log("[/login] body:", body);
+
+  const su = (body.su || "").trim();
+  const sp = (body.sp || "").trim();
+  console.log("[/login] trimmed su:", su);
+
+  if (!fs.existsSync(DB_PATH)) {
+    console.error(`[/login] Database file missing: ${DB_PATH}`);
+    return res.status(500).json({ success: false, error: "Database file missing" });
+  }
 
   if (!su || !sp) {
     return res.status(400).json({ success: false, message: "Missing credentials" });
@@ -226,11 +239,22 @@ app.post("/login", async (req, res) => {
 
   try {
     const user = await findActiveUser(su);
+    console.log("[/login] user lookup:", user);
 
-    if (!user || !user.active || user.sp !== sp) {
+    if (!user) {
       return res
         .status(401)
-        .json({ success: false, message: "არასწორი მომხმარებელი ან პაროლი" });
+        .json({ success: false, message: "???????? ???????????? ?? ??????" });
+    }
+
+    if (user.sp !== sp) {
+      return res
+        .status(401)
+        .json({ success: false, message: "???????? ???????????? ?? ??????" });
+    }
+
+    if (!user.active) {
+      return res.status(403).json({ success: false, message: "User is inactive" });
     }
 
     const token = issueAccessToken(user);
@@ -244,6 +268,23 @@ app.post("/login", async (req, res) => {
   } catch (err) {
     console.error("Login error:", err);
     return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+app.get("/debug/users", async (_req, res) => {
+  if (!ensureDatabase(res)) return;
+
+  if (!fs.existsSync(DB_PATH)) {
+    console.error(`[/debug/users] Database file missing: ${DB_PATH}`);
+    return res.status(500).json({ success: false, error: "Database file missing" });
+  }
+
+  try {
+    const records = await all("SELECT su, active FROM users ORDER BY su ASC");
+    return res.json({ users: records.map((record) => ({ su: record.su, active: record.active })) });
+  } catch (err) {
+    console.error("[/debug/users] Failed to list users:", err);
+    return res.status(500).json({ success: false, message: "Database error" });
   }
 });
 
