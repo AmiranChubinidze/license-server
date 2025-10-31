@@ -216,6 +216,7 @@ app.post("/auth", async (req, res) => {
   }
 });
 app.get("/ping", (_req, res) => res.json({ ok: true }))
+console.log("Loaded routes: /login, /verify, /refresh, /waybill/total");
 app.post("/login", async (req, res) => {
   if (!ensureDatabase(res)) return;
 
