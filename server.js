@@ -5,7 +5,7 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
-const { db, run, get, all, DB_PATH } = require("./rs-license-server/db");
+const { db, run, get, all, DB_PATH } = require("./license-server/db");
 const dbExistsOnStartup = fs.existsSync(DB_PATH);
 console.log(`[DB] Path: ${DB_PATH} | exists: ${dbExistsOnStartup}`);
 
