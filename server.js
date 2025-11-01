@@ -12,7 +12,17 @@ console.log(`[DB] Path: ${DB_PATH} | exists: ${dbExistsOnStartup}`);
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || origin.startsWith("chrome-extension://")) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-admin-key"],
+}));
 app.use(bodyParser.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
