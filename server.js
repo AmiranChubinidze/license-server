@@ -88,12 +88,22 @@ function issueToken(user, options = {}) {
     name: user.company_name,
     type: options.type ?? "access",
   };
+
+  if (options.extraClaims && typeof options.extraClaims === "object") {
+    Object.assign(payload, options.extraClaims);
+  }
+
   const expiresIn =
     options.expiresIn ?? (payload.type === "refresh" ? "30d" : "24h");
   return jwt.sign(payload, JWT_SECRET, { expiresIn });
 }
 
-const issueAccessToken = (user) => issueToken(user, { type: "access", expiresIn: "24h" });
+const issueAccessToken = (user, { sp } = {}) =>
+  issueToken(user, {
+    type: "access",
+    expiresIn: "24h",
+    extraClaims: sp ? { sp } : undefined,
+  });
 const issueRefreshToken = (user) => issueToken(user, { type: "refresh", expiresIn: "30d" });
 
 function decodeToken(token, options = {}) {
@@ -198,7 +208,7 @@ function ensureDatabase(res) {
 app.post("/auth", async (req, res) => {
   if (!ensureDatabase(res)) return;
   const su = (req.body?.su || "").trim();
-  const sp = (req.body?.sp || "").trim();
+  const sp = typeof req.body?.sp === "string" ? req.body.sp : "";
 
   if (!su || !sp) {
     return res.status(400).json({ valid: false, message: "Missing credentials" });
@@ -207,13 +217,13 @@ app.post("/auth", async (req, res) => {
   try {
     const user = await findActiveUser(su);
 
-    if (!user || !user.active || user.sp !== sp) {
+    if (!user || !user.active) {
       return res
         .status(401)
         .json({ valid: false, message: "???????? ???????????? ?? ??????" });
     }
 
-    const token = issueToken(user);
+    const token = issueAccessToken(user, { sp });
     return res.json({
       valid: true,
       token,
@@ -231,11 +241,10 @@ app.post("/login", async (req, res) => {
   if (!ensureDatabase(res)) return;
 
   const body = req.body || {};
-  console.log("[/login] body:", body);
 
   const su = (body.su || "").trim();
-  const sp = (body.sp || "").trim();
-  console.log("[/login] trimmed su:", su);
+  const sp = typeof body.sp === "string" ? body.sp : "";
+  console.log("[/login] Login attempt for SU:", su);
 
   if (!fs.existsSync(DB_PATH)) {
     console.error(`[/login] Database file missing: ${DB_PATH}`);
@@ -248,15 +257,8 @@ app.post("/login", async (req, res) => {
 
   try {
     const user = await findActiveUser(su);
-    console.log("[/login] user lookup:", user);
 
     if (!user) {
-      return res
-        .status(401)
-        .json({ success: false, message: "???????? ???????????? ?? ??????" });
-    }
-
-    if (user.sp !== sp) {
       return res
         .status(401)
         .json({ success: false, message: "???????? ???????????? ?? ??????" });
@@ -266,7 +268,11 @@ app.post("/login", async (req, res) => {
       return res.status(403).json({ success: false, message: "User is inactive" });
     }
 
-    const token = issueAccessToken(user);
+    if (!sp) {
+      return res.status(400).json({ success: false, message: "Missing credentials" });
+    }
+
+    const token = issueAccessToken(user, { sp });
     const refreshToken = issueRefreshToken(user);
     return res.json({
       success: true,
@@ -276,6 +282,40 @@ app.post("/login", async (req, res) => {
     });
   } catch (err) {
     console.error("Login error:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+app.post("/loginHybrid", async (req, res) => {
+  if (!ensureDatabase(res)) return;
+
+  const su = (req.body?.su || "").trim();
+  const sp = typeof req.body?.sp === "string" ? req.body.sp : "";
+  console.log("[/loginHybrid] Login attempt for SU:", su);
+
+  if (!su || !sp) {
+    return res.status(400).json({ success: false, message: "Missing credentials" });
+  }
+
+  try {
+    const user = await findActiveUser(su);
+
+    if (!user || !user.active) {
+      return res
+        .status(401)
+        .json({ success: false, message: "User not found or inactive" });
+    }
+
+    const token = issueAccessToken(user, { sp });
+    const refreshToken = issueRefreshToken(user);
+    return res.json({
+      success: true,
+      token,
+      refreshToken,
+      user: serializeUser(user),
+    });
+  } catch (err) {
+    console.error("[/loginHybrid] Login error:", err);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 });
@@ -336,14 +376,9 @@ app.post("/refresh", async (req, res) => {
       return res.status(401).json({ success: false, message: "User revoked or not found" });
     }
 
-    const newToken = issueAccessToken(user);
-    const newRefreshToken = issueRefreshToken(user);
-    return res.json({
-      success: true,
-      token: newToken,
-      refreshToken: newRefreshToken,
-      user: serializeUser(user),
-    });
+    return res
+      .status(401)
+      .json({ success: false, message: "Re-authentication required" });
   } catch (err) {
     return res.status(401).json({ success: false, message: "Invalid or expired token" });
   }
@@ -364,8 +399,7 @@ app.post("/auth/refresh", async (req, res) => {
       return res.status(401).json({ message: "User revoked or not found" });
     }
 
-    const newToken = issueToken(user);
-    return res.json({ newToken });
+    return res.status(401).json({ message: "Re-authentication required" });
   } catch (err) {
     console.warn("Token refresh failed:", err?.message || err);
     return res.status(401).json({ message: "Invalid or expired token" });
@@ -413,7 +447,11 @@ app.post("/waybill/total", async (req, res) => {
       return res.status(401).json({ message: "User revoked or not found" });
     }
 
-    const total = await fetchWaybillTotal(user, month);
+    if (!decoded.sp) {
+      return res.status(401).json({ message: "Session expired; please login again" });
+    }
+
+    const total = await fetchWaybillTotal({ su: user.su, sp: decoded.sp }, month);
     return res.json({ total });
   } catch (err) {
     console.error("Waybill total failed:", err?.message || err);
@@ -437,14 +475,14 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
 app.post("/admin/addUser", requireAdmin, async (req, res) => {
   if (!ensureDatabase(res)) return;
   const su = (req.body?.su || "").trim();
-  const sp = (req.body?.sp || "").trim();
   const companyName = (req.body?.company_name || "").trim();
 
-  if (!su || !sp || !companyName) {
-    return res.status(400).json({ success: false, message: "All fields are required" });
+  if (!su || !companyName) {
+    return res.status(400).json({ success: false, message: "Missing fields" });
   }
 
   try {
+    const placeholderSp = "";
     await run(
       `INSERT INTO users (su, sp, company_name, active)
        VALUES (?, ?, ?, 1)
@@ -453,7 +491,7 @@ app.post("/admin/addUser", requireAdmin, async (req, res) => {
          company_name = excluded.company_name,
          active = 1,
          updated_at = CURRENT_TIMESTAMP`,
-      [su, sp, companyName]
+      [su, placeholderSp, companyName]
     );
 
     return res.json({ success: true });

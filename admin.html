@@ -39,16 +39,6 @@
             <input id="suInput" name="su" maxlength="64" required />
           </div>
           <div class="field-row">
-            <label for="spInput">პაროლი (SP)</label>
-            <input
-              id="spInput"
-              name="sp"
-              type="password"
-              maxlength="64"
-              required
-            />
-          </div>
-          <div class="field-row">
             <label for="labelInput">კომპანიის დასახელება</label>
             <input
               id="labelInput"
@@ -225,15 +215,14 @@
           event.preventDefault();
           const form = event.target;
           const su = form.su.value.trim();
-          const sp = form.sp.value;
           const companyName = form.company_name.value.trim();
 
-          if (!su || !sp || !companyName) return;
+          if (!su || !companyName) return;
 
           try {
             const res = await authorizedFetch("/admin/addUser", {
               method: "POST",
-              body: JSON.stringify({ su, sp, company_name: companyName }),
+              body: JSON.stringify({ su, company_name: companyName }),
             });
             const payload = await res.json();
             if (!payload.success) {
