@@ -280,6 +280,45 @@ app.post("/login", async (req, res) => {
   }
 });
 
+app.post("/loginSimple", async (req, res) => {
+  if (!ensureDatabase(res)) return;
+
+  const su = (req.body?.su || "").trim();
+  console.log("[/loginSimple] Login attempt for SU:", su);
+
+  if (!su) {
+    return res.status(400).json({ success: false, message: "Missing su" });
+  }
+
+  try {
+    const user = await findActiveUser(su);
+
+    if (!user || !user.active) {
+      return res
+        .status(401)
+        .json({ success: false, message: "User not found or inactive" });
+    }
+
+    const token = issueAccessToken(user);
+    const refreshToken = issueRefreshToken(user);
+
+    return res.json({
+      success: true,
+      token,
+      refreshToken,
+      user: {
+        su: user.su,
+        name: user.company_name,
+      },
+    });
+  } catch (err) {
+    console.error("[/loginSimple] Login error:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: err?.message || "Login failed" });
+  }
+});
+
 app.get("/debug/users", async (_req, res) => {
   if (!ensureDatabase(res)) return;
 
