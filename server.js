@@ -129,11 +129,7 @@ function buildDateRange(monthKey) {
   }
 
   const start = new Date(Date.UTC(year, month, 1));
-  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth();
-  const endDay = isCurrentMonth
-    ? now.getUTCDate()
-    : new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  const end = new Date(Date.UTC(year, month, endDay));
+  const end = new Date(Date.UTC(year, month + 1, 0));
 
   const toIso = (date) =>
     `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(
@@ -148,7 +144,7 @@ function buildDateRange(monthKey) {
 
 async function fetchWaybillTotal({ su, sp }, monthKey) {
   const { start, end } = buildDateRange(monthKey);
-  const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
+  const xmlBody = `
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -160,41 +156,47 @@ async function fetchWaybillTotal({ su, sp }, monthKey) {
       <last_update_date_e>${end}</last_update_date_e>
     </get_waybills_v1>
   </soap:Body>
-</soap:Envelope>`;
+</soap:Envelope>`.trim();
 
   try {
-    console.log(`[SOAP] Request started for ${su} ${monthKey || "current"}`);
+    console.log(`[SOAP] Request started for ${su} (${monthKey || "current"})`);
     const response = await axios.post(
       "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_waybills_v1",
-      soapEnvelope,
+      xmlBody,
       {
         headers: {
-          "Content-Type": "text/xml; charset=utf-8",
+          "Content-Type": "text/xml; charset=UTF-8",
           SOAPAction: "http://tempuri.org/get_waybills_v1",
+          "Accept-Charset": "UTF-8",
         },
         timeout: 120000,
+        responseType: "arraybuffer",
       }
     );
 
-    if (!response?.data || typeof response.data !== "string") {
+    if (!response?.data) {
       throw new Error("Empty response from RS SOAP service");
     }
 
-    console.log(`[SOAP] Response length: ${response.data.length}`);
-    const matches = [...response.data.matchAll(/<(FULL_AMOUNT|AMOUNT)>([^<]+)<\/\1>/gi)];
+    const xml = Buffer.from(response.data).toString("utf8");
+    console.log(`[SOAP] Response length: ${xml.length}`);
+    const amountMatches = [
+      ...xml.matchAll(/<([A-Za-z0-9_:]*?(?:FULL_AMOUNT|AMOUNT))>([\d\s.,-]+)<\/\1>/gi),
+    ];
+    console.log(`[SOAP] Found ${amountMatches.length} amounts`);
 
-    if (!matches.length) {
-      console.log("[SOAP] Total parsed: 0");
+    if (!amountMatches.length) {
+      console.log("[SOAP] Total parsed: 0.00");
       return { total: 0, message: "No waybills found" };
     }
 
-    const aggregate = matches
+    const combined = amountMatches
       .map((match) => normalizeAmount(match[2] || "0"))
       .reduce((sum, amount) => sum + amount, 0);
 
-    const total = Number(aggregate.toFixed(2));
-    console.log(`[SOAP] Total parsed: ${total}`);
-    return { total };
+    const total = Number(combined.toFixed(2));
+    console.log(`[SOAP] Total parsed: ${total.toFixed(2)}`);
+    return { total, message: "OK" };
   } catch (err) {
     console.error("[SOAP] Request failed:", err?.message || err);
     const error = new Error(err?.message || "SOAP request failed");
@@ -459,20 +461,22 @@ app.post("/waybill/total", async (req, res) => {
 
     const result = await fetchWaybillTotal({ su: user.su, sp: decoded.sp }, month);
     if (result && typeof result === "object" && result !== null) {
+      const totalValue = Number.isFinite(result.total) ? Number(result.total) : 0;
       return res.json({
-        total: typeof result.total === "number" ? result.total : 0,
-        ...(result.message ? { message: result.message } : {}),
+        total: totalValue.toFixed(2),
+        message: result.message || "OK",
       });
     }
 
     const total = Number.isFinite(result) ? Number(result) : 0;
-    return res.json({ total });
+    return res.json({ total: total.toFixed(2), message: "OK" });
   } catch (err) {
     console.error("Waybill total failed:", err?.message || err);
     if (err?.isSoapError) {
-      return res
-        .status(502)
-        .json({ message: `RS.ge SOAP error: ${err.message || "SOAP request failed"}` });
+      return res.status(502).json({
+        message: "RS.ge SOAP error",
+        details: err.message || "SOAP request failed",
+      });
     }
 
     const isJwtError =
@@ -483,7 +487,9 @@ app.post("/waybill/total", async (req, res) => {
       return res.status(401).json({ message: "Invalid or expired token" });
     }
 
-    return res.status(500).json({ message: err?.message || "Failed to calculate total" });
+    return res
+      .status(500)
+      .json({ message: err?.message || "Failed to calculate total" });
   }
 });
 
