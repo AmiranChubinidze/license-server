@@ -152,8 +152,8 @@ async function fetchWaybillTotal({ su, sp }, monthKey) {
     <get_waybills_v1 xmlns="http://tempuri.org/">
       <su>${su}</su>
       <sp>${sp}</sp>
-      <last_update_date_s>${start}</last_update_date_s>
-      <last_update_date_e>${end}</last_update_date_e>
+      <create_date_s>${start}</create_date_s>
+      <create_date_e>${end}</create_date_e>
     </get_waybills_v1>
   </soap:Body>
 </soap:Envelope>`.trim();
