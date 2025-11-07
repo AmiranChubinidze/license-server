@@ -222,6 +222,10 @@
           try {
             const res = await authorizedFetch("/admin/addUser", {
               method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-admin-key": "xuticxracxra"
+              },
               body: JSON.stringify({ su, company_name: companyName }),
             });
             const payload = await res.json();
