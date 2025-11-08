@@ -28,6 +28,81 @@ app.use(bodyParser.json());
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
 const ADMIN_KEY = process.env.ADMIN_KEY || "change_this_admin_key";
 
+const REQUIRED_USER_COLUMNS = [
+  {
+    name: "su",
+    ddl: "ALTER TABLE users ADD COLUMN su TEXT NOT NULL UNIQUE",
+    description: "TEXT NOT NULL UNIQUE",
+  },
+  {
+    name: "sp",
+    ddl: "ALTER TABLE users ADD COLUMN sp TEXT NOT NULL DEFAULT ''",
+    description: "TEXT NOT NULL DEFAULT ''",
+  },
+  {
+    name: "company_name",
+    ddl: "ALTER TABLE users ADD COLUMN company_name TEXT NOT NULL DEFAULT ''",
+    description: "TEXT NOT NULL DEFAULT ''",
+  },
+  {
+    name: "active",
+    ddl: "ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
+    description: "INTEGER NOT NULL DEFAULT 1",
+  },
+  {
+    name: "updated_at",
+    ddl: "ALTER TABLE users ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    description: "DATETIME DEFAULT CURRENT_TIMESTAMP",
+  },
+];
+
+async function logUsersTableSchema(tag) {
+  try {
+    const info = await all("PRAGMA table_info(users)");
+    if (Array.isArray(info)) {
+      console.log(`[DB] Users schema snapshot${tag ? ` (${tag})` : ""}:`);
+      console.table(info);
+    } else {
+      console.log("[DB] PRAGMA table_info(users) returned no rows");
+    }
+    return Array.isArray(info) ? info : [];
+  } catch (err) {
+    console.error("[DB] Failed to inspect users table:", err?.message || err);
+    return [];
+  }
+}
+
+async function migrateUsersTableColumns() {
+  const info = await logUsersTableSchema("before migration");
+  const columnsPresent = new Set(info.map((col) => col.name));
+  const missingColumns = REQUIRED_USER_COLUMNS.filter(
+    (col) => !columnsPresent.has(col.name)
+  );
+
+  if (!missingColumns.length) {
+    console.log("[DB] Users table already has all required columns");
+    await logUsersTableSchema("verified");
+    return;
+  }
+
+  for (const col of missingColumns) {
+    try {
+      await run(col.ddl);
+      console.log(
+        `[DB MIGRATION] Added missing column: ${col.name} (${col.description})`
+      );
+    } catch (err) {
+      console.error(
+        `[DB MIGRATION] Failed to add column ${col.name}:`,
+        err?.message || err
+      );
+      throw err;
+    }
+  }
+
+  await logUsersTableSchema("after migration");
+}
+
 async function initDb() {
   if (!db) {
     console.error("Database not initialized; skipping migrations.");
@@ -45,6 +120,7 @@ async function initDb() {
     )
   `);
   await run(`CREATE INDEX IF NOT EXISTS users_su_idx ON users (su)`);
+  await migrateUsersTableColumns();
 }
 
 
