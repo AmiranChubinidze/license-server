@@ -16,7 +16,7 @@ const allowedOrigins = [
   "https://amnairi.xyz",
   "https://amnairi.onrender.com",
   "http://localhost:3000",
-  "chrome-extension://<your-extension-id>",
+  "chrome-extension://hmkndkpjehkgomaedmaghccedjfgkkeb",
 ];
 app.use(
   cors({
