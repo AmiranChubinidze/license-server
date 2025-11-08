@@ -12,17 +12,27 @@ console.log(`[DB] Path: ${DB_PATH} | exists: ${dbExistsOnStartup}`);
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const app = express();
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || origin.startsWith("chrome-extension://")) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-admin-key"],
-}));
+const allowedOrigins = [
+  "https://amnairi.xyz",
+  "https://amnairi.onrender.com",
+  "http://localhost:3000",
+  "chrome-extension://<your-extension-id>",
+];
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-admin-key"],
+  })
+);
+console.log("[CORS] Allowed origins:", allowedOrigins);
 app.use(bodyParser.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
