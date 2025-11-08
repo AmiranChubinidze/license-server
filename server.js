@@ -654,11 +654,6 @@ app.post("/waybill/total", async (req, res) => {
       return res.status(401).json({ message: "User revoked or not found" });
     }
 
-    if (!user.sp || !String(user.sp).trim()) {
-      console.warn(`[AUTH] Missing SP for ${decoded.su}`);
-      return res.status(403).json({ success: false, message: "Password not on file" });
-    }
-
     const effectiveSp = selectEffectiveSp(user.sp, decoded.sp, decoded.su);
     if (!effectiveSp) {
       return res.status(401).json({ message: "Session expired; please login again" });
