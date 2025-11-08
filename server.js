@@ -402,6 +402,14 @@ function ensureDatabase(res) {
   return true;
 }
 
+function selectEffectiveSp(userSp, providedSp, su) {
+  const stored = (userSp || "").trim();
+  if (stored) return stored;
+  if (typeof providedSp === "string" && providedSp.trim()) return providedSp.trim();
+  console.warn(`[AUTH] Missing SP for ${su}`);
+  return null;
+}
+
 app.post("/auth", async (req, res) => {
   if (!ensureDatabase(res)) return;
   const su = (req.body?.su || "").trim();
@@ -448,7 +456,7 @@ app.post("/login", async (req, res) => {
     return res.status(500).json({ success: false, error: "Database file missing" });
   }
 
-  if (!su || !sp) {
+  if (!su) {
     return res.status(400).json({ success: false, message: "Missing credentials" });
   }
 
@@ -465,16 +473,12 @@ app.post("/login", async (req, res) => {
       return res.status(403).json({ success: false, message: "User is inactive" });
     }
 
-    if (!user.sp || !String(user.sp).trim()) {
-      console.warn(`[AUTH] Missing SP for ${su}`);
-      return res.status(403).json({ success: false, message: "Password not on file" });
-    }
-
-    if (!sp) {
+    const effectiveSp = selectEffectiveSp(user.sp, sp, su);
+    if (!effectiveSp) {
       return res.status(400).json({ success: false, message: "Missing credentials" });
     }
 
-    const token = issueAccessToken(user, { sp });
+    const token = issueAccessToken(user, { sp: effectiveSp });
     const refreshToken = issueRefreshToken(user);
     return res.json({
       success: true,
@@ -655,11 +659,12 @@ app.post("/waybill/total", async (req, res) => {
       return res.status(403).json({ success: false, message: "Password not on file" });
     }
 
-    if (!decoded.sp) {
+    const effectiveSp = selectEffectiveSp(user.sp, decoded.sp, decoded.su);
+    if (!effectiveSp) {
       return res.status(401).json({ message: "Session expired; please login again" });
     }
 
-    const result = await fetchWaybillTotal({ su: user.su, sp: decoded.sp }, month);
+    const result = await fetchWaybillTotal({ su: user.su, sp: effectiveSp }, month);
     if (result && typeof result === "object" && result !== null) {
       const totalValue = Number.isFinite(result.total) ? Number(result.total) : 0;
       return res.json({
