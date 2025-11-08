@@ -27,14 +27,6 @@ app.use(bodyParser.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
 const ADMIN_KEY = process.env.ADMIN_KEY || "change_this_admin_key";
-try {
-  const info = db.prepare("PRAGMA table_info(users)").all();
-  console.log("=== USERS TABLE SCHEMA ===");
-  console.table(info);
-  console.log("==========================");
-} catch (err) {
-  console.error("Schema check failed:", err);
-}
 
 async function initDb() {
   if (!db) {
