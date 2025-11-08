@@ -14,7 +14,9 @@ require("dotenv").config({ path: path.join(__dirname, ".env") });
 const app = express();
 const allowedOrigins = [
   "https://amnairi.xyz",
+  "https://www.amnairi.xyz",
   "https://amnairi.onrender.com",
+  "https://license-server-z3vf.onrender.com",
   "http://localhost:3000",
   "chrome-extension://hmkndkpjehkgomaedmaghccedjfgkkeb",
 ];
