@@ -40,7 +40,10 @@ app.use(bodyParser.json());
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
 const ADMIN_KEY = process.env.ADMIN_KEY || "change_this_admin_key";
 const SOAP_DATE_KEYS = ["create_date", "last_update_date"];
-let soapDateKey = SOAP_DATE_KEYS[0];
+const SOAP_DATE_KEY_OVERRIDE = process.env.SOAP_DATE_KEY
+  ? sanitizeSoapDateKey(process.env.SOAP_DATE_KEY)
+  : null;
+let soapDateKey = SOAP_DATE_KEY_OVERRIDE || "last_update_date";
 
 const REQUIRED_USER_COLUMNS = [
   {
@@ -118,6 +121,12 @@ async function migrateUsersTableColumns() {
 }
 
 async function autodetectSoapDateKey() {
+  if (SOAP_DATE_KEY_OVERRIDE) {
+    console.log(
+      `[SOAP] Using ${soapDateKey}_s/e from SOAP_DATE_KEY environment override`
+    );
+    return;
+  }
   try {
     const user = await get(
       "SELECT su, sp FROM users WHERE TRIM(IFNULL(sp, '')) <> '' LIMIT 1"
@@ -392,7 +401,7 @@ function extractSoapStatus(xml) {
 
 function handleSoapStatus(statusCode, su) {
   if (statusCode === -1072) {
-    const error = new Error("RS.ge range exceeds allowed window");
+    const error = new Error("RS.ge returned STATUS -1072");
     error.isSoapError = true;
     error.soapStatus = -1072;
     error.httpStatus = 403;
@@ -433,26 +442,47 @@ function summarizeWaybillTotalsFromXml(xml, su) {
   return { total, message: "OK" };
 }
 
-async function fetchWaybillTotalInChunks(credentials, range) {
-  const segments = chunkDateRange(range, 3);
+async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3) {
+  const segments = chunkDateRange(range, windowDays);
   if (!segments.length) {
     return { total: 0, message: "No waybills found", logs: [] };
   }
   console.warn(
-    `[SOAP] Range too wide for ${credentials.su}; retrying in ${segments.length} chunk(s)`
+    `[SOAP] Range too wide for ${credentials.su}; retrying in ${segments.length} chunk(s) of ${windowDays} day(s)`
   );
   const logs = [];
   let combinedTotal = 0;
   for (const segment of segments) {
-    const xml = await requestWaybillXml(credentials, segment);
-    const summary = summarizeWaybillTotalsFromXml(xml, credentials.su);
-    const segmentTotal = Number.isFinite(summary.total) ? Number(summary.total) : 0;
-    combinedTotal += segmentTotal;
-    logs.push({
-      range: `${segment.start}..${segment.end}`,
-      total: Number(segmentTotal.toFixed(2)),
-      message: summary.message || "OK",
-    });
+    try {
+      const xml = await requestWaybillXml(credentials, segment);
+      const summary = summarizeWaybillTotalsFromXml(xml, credentials.su);
+      const segmentTotal = Number.isFinite(summary.total) ? Number(summary.total) : 0;
+      combinedTotal += segmentTotal;
+      logs.push({
+        range: `${segment.start}..${segment.end}`,
+        total: Number(segmentTotal.toFixed(2)),
+        message: summary.message || "OK",
+      });
+    } catch (err) {
+      if (err?.soapStatus === -1072 && windowDays > 1) {
+        const nextWindow = Math.max(1, Math.floor(windowDays / 2));
+        console.warn(
+          `[SOAP] Segment ${segment.start}..${segment.end} still too wide; retrying with ${nextWindow}-day window`
+        );
+        const nested = await fetchWaybillTotalInChunks(
+          credentials,
+          segment,
+          nextWindow
+        );
+        const nestedTotal = Number(nested.total) || 0;
+        combinedTotal += nestedTotal;
+        if (Array.isArray(nested.logs)) {
+          logs.push(...nested.logs);
+        }
+        continue;
+      }
+      throw err;
+    }
   }
   return {
     total: Number(combinedTotal.toFixed(2)),
@@ -744,12 +774,12 @@ app.post("/waybill/total", async (req, res) => {
   } catch (err) {
     if (err?.soapStatus === -1072) {
       console.warn(
-        `[SOAP] SU ${user?.su || "unknown"} returned STATUS -1072 (range exceeds limit)`
+        `[SOAP] SU ${user?.su || "unknown"} returned STATUS -1072 (RS permissions or limits)`
       );
       return res.status(403).json({
         success: false,
         code: -1072,
-        message: "RS.ge allows only 3-day windows; please retry later",
+        message: "RS.ge rejected this request (STATUS -1072). Please verify SU permissions or try again later.",
       });
     }
     console.error("Waybill total failed:", err?.message || err);
