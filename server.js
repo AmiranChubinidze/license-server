@@ -285,36 +285,50 @@ function buildProbeRange() {
   };
 }
 
+function chunkDateRange(range, windowDays = 3) {
+  const startDate = new Date(`${range.start}T00:00:00Z`);
+  const endDate = new Date(`${range.end}T00:00:00Z`);
+  const chunks = [];
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return chunks;
+  }
+  let cursor = new Date(startDate);
+  while (cursor <= endDate) {
+    const chunkStart = new Date(cursor);
+    const chunkEnd = new Date(cursor);
+    chunkEnd.setUTCDate(chunkEnd.getUTCDate() + windowDays - 1);
+    if (chunkEnd > endDate) {
+      chunkEnd.setTime(endDate.getTime());
+    }
+    chunks.push({
+      start: formatIsoDateUTC(chunkStart),
+      end: formatIsoDateUTC(chunkEnd),
+    });
+    cursor.setUTCDate(cursor.getUTCDate() + windowDays);
+  }
+  return chunks;
+}
+
 function sanitizeSoapDateKey(key) {
   return SOAP_DATE_KEYS.includes(key) ? key : SOAP_DATE_KEYS[0];
 }
 
-async function fetchWaybillTotal({ su, sp }, monthKey) {
-  const { start, end } = buildDateRange(monthKey);
+async function fetchWaybillTotal(credentials, monthKey) {
+  const range = buildDateRange(monthKey);
   try {
-    const xml = await requestWaybillXml({ su, sp }, { start, end });
-    const amountMatches = [
-      ...xml.matchAll(/<([A-Za-z0-9_:]*?(?:FULL_AMOUNT|AMOUNT))>([\d\s.,-]+)<\/\1>/gi),
-    ];
-    console.log(`[SOAP] Found ${amountMatches.length} amounts`);
-    const statusCode = extractSoapStatus(xml);
-    if (typeof statusCode === "number") {
-      handleSoapStatus(statusCode, su);
-    }
-
-    if (!amountMatches.length) {
-      console.log("[SOAP] Total parsed: 0.00");
-      return { total: 0, message: "No waybills found" };
-    }
-
-    const combined = amountMatches
-      .map((match) => normalizeAmount(match[2] || "0"))
-      .reduce((sum, amount) => sum + amount, 0);
-
-    const total = Number(combined.toFixed(2));
-    console.log(`[SOAP] Total parsed: ${total.toFixed(2)}`);
-    return { total, message: "OK" };
+    const xml = await requestWaybillXml(credentials, range);
+    return summarizeWaybillTotalsFromXml(xml, credentials.su);
   } catch (err) {
+    if (err?.soapStatus === -1072) {
+      try {
+        return await fetchWaybillTotalInChunks(credentials, range);
+      } catch (chunkErr) {
+        if (!chunkErr.isSoapError) {
+          chunkErr.isSoapError = true;
+        }
+        throw chunkErr;
+      }
+    }
     console.error("[SOAP] Request failed:", err?.message || err);
     if (err?.isSoapError) {
       throw err;
@@ -378,7 +392,7 @@ function extractSoapStatus(xml) {
 
 function handleSoapStatus(statusCode, su) {
   if (statusCode === -1072) {
-    const error = new Error("User lacks RS.ge permissions");
+    const error = new Error("RS.ge range exceeds allowed window");
     error.isSoapError = true;
     error.soapStatus = -1072;
     error.httpStatus = 403;
@@ -392,6 +406,59 @@ function handleSoapStatus(statusCode, su) {
     error.su = su;
     throw error;
   }
+}
+
+function summarizeWaybillTotalsFromXml(xml, su) {
+  const statusCode = extractSoapStatus(xml);
+  if (typeof statusCode === "number") {
+    handleSoapStatus(statusCode, su);
+  }
+
+  const amountMatches = [
+    ...xml.matchAll(/<([A-Za-z0-9_:]*?(?:FULL_AMOUNT|AMOUNT))>([\d\s.,-]+)<\/\1>/gi),
+  ];
+  console.log(`[SOAP] Found ${amountMatches.length} amounts`);
+
+  if (!amountMatches.length) {
+    console.log("[SOAP] Total parsed: 0.00");
+    return { total: 0, message: "No waybills found" };
+  }
+
+  const combined = amountMatches
+    .map((match) => normalizeAmount(match[2] || "0"))
+    .reduce((sum, amount) => sum + amount, 0);
+
+  const total = Number(combined.toFixed(2));
+  console.log(`[SOAP] Total parsed: ${total.toFixed(2)}`);
+  return { total, message: "OK" };
+}
+
+async function fetchWaybillTotalInChunks(credentials, range) {
+  const segments = chunkDateRange(range, 3);
+  if (!segments.length) {
+    return { total: 0, message: "No waybills found", logs: [] };
+  }
+  console.warn(
+    `[SOAP] Range too wide for ${credentials.su}; retrying in ${segments.length} chunk(s)`
+  );
+  const logs = [];
+  let combinedTotal = 0;
+  for (const segment of segments) {
+    const xml = await requestWaybillXml(credentials, segment);
+    const summary = summarizeWaybillTotalsFromXml(xml, credentials.su);
+    const segmentTotal = Number.isFinite(summary.total) ? Number(summary.total) : 0;
+    combinedTotal += segmentTotal;
+    logs.push({
+      range: `${segment.start}..${segment.end}`,
+      total: Number(segmentTotal.toFixed(2)),
+      message: summary.message || "OK",
+    });
+  }
+  return {
+    total: Number(combinedTotal.toFixed(2)),
+    message: "OK",
+    logs,
+  };
 }
 
 function ensureDatabase(res) {
@@ -662,10 +729,14 @@ app.post("/waybill/total", async (req, res) => {
     const result = await fetchWaybillTotal({ su: user.su, sp: effectiveSp }, month);
     if (result && typeof result === "object" && result !== null) {
       const totalValue = Number.isFinite(result.total) ? Number(result.total) : 0;
-      return res.json({
+      const payload = {
         total: totalValue.toFixed(2),
         message: result.message || "OK",
-      });
+      };
+      if (Array.isArray(result.logs)) {
+        payload.logs = result.logs;
+      }
+      return res.json(payload);
     }
 
     const total = Number.isFinite(result) ? Number(result) : 0;
@@ -673,11 +744,13 @@ app.post("/waybill/total", async (req, res) => {
   } catch (err) {
     if (err?.soapStatus === -1072) {
       console.warn(
-        `[SOAP] SU ${user?.su || "unknown"} returned STATUS -1072 (no permission)`
+        `[SOAP] SU ${user?.su || "unknown"} returned STATUS -1072 (range exceeds limit)`
       );
-      return res
-        .status(403)
-        .json({ success: false, code: -1072, message: "User lacks RS.ge permissions" });
+      return res.status(403).json({
+        success: false,
+        code: -1072,
+        message: "RS.ge allows only 3-day windows; please retry later",
+      });
     }
     console.error("Waybill total failed:", err?.message || err);
     if (err?.isSoapError) {
