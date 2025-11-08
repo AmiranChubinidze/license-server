@@ -39,6 +39,8 @@ app.use(bodyParser.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
 const ADMIN_KEY = process.env.ADMIN_KEY || "change_this_admin_key";
+const SOAP_DATE_KEYS = ["create_date", "last_update_date"];
+let soapDateKey = SOAP_DATE_KEYS[0];
 
 const REQUIRED_USER_COLUMNS = [
   {
@@ -115,6 +117,38 @@ async function migrateUsersTableColumns() {
   await logUsersTableSchema("after migration");
 }
 
+async function autodetectSoapDateKey() {
+  try {
+    const user = await get(
+      "SELECT su, sp FROM users WHERE TRIM(IFNULL(sp, '')) <> '' LIMIT 1"
+    );
+    if (!user) {
+      console.warn("[SOAP] Skipping date parameter autodetect; no users with stored SP");
+      return;
+    }
+    const probeRange = buildProbeRange();
+    for (const key of SOAP_DATE_KEYS) {
+      try {
+        const xml = await requestWaybillXml(user, probeRange, key);
+        const statusCode = extractSoapStatus(xml);
+        if (statusCode === -100) {
+          console.warn(`[SOAP] Probe with ${key}_s/e returned STATUS -100`);
+          continue;
+        }
+        soapDateKey = key;
+        console.log(`[SOAP] Using ${soapDateKey}_s/e for all calls`);
+        return;
+      } catch (err) {
+        console.error(`[SOAP] Probe using ${key}_s/e failed:`, err?.message || err);
+      }
+    }
+    soapDateKey = SOAP_DATE_KEYS[0];
+    console.warn("[SOAP] Autodetect failed; defaulting to create_date");
+  } catch (err) {
+    console.error("[SOAP] Autodetect skipped due to error:", err?.message || err);
+  }
+}
+
 async function initDb() {
   if (!db) {
     console.error("Database not initialized; skipping migrations.");
@@ -133,6 +167,7 @@ async function initDb() {
   `);
   await run(`CREATE INDEX IF NOT EXISTS users_su_idx ON users (su)`);
   await migrateUsersTableColumns();
+  await autodetectSoapDateKey();
 }
 
 
@@ -232,48 +267,40 @@ function buildDateRange(monthKey) {
   };
 }
 
+function formatIsoDateUTC(date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    date.getUTCDate()
+  ).padStart(2, "0")}`;
+}
+
+function buildProbeRange() {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  start.setUTCDate(start.getUTCDate() - 1);
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  end.setUTCDate(end.getUTCDate() + 1);
+  return {
+    start: formatIsoDateUTC(start),
+    end: formatIsoDateUTC(end),
+  };
+}
+
+function sanitizeSoapDateKey(key) {
+  return SOAP_DATE_KEYS.includes(key) ? key : SOAP_DATE_KEYS[0];
+}
+
 async function fetchWaybillTotal({ su, sp }, monthKey) {
   const { start, end } = buildDateRange(monthKey);
-  const xmlBody = `
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <get_waybills_v1 xmlns="http://tempuri.org/">
-      <su>${su}</su>
-      <sp>${sp}</sp>
-      <create_date_s>${start}</create_date_s>
-      <create_date_e>${end}</create_date_e>
-    </get_waybills_v1>
-  </soap:Body>
-</soap:Envelope>`.trim();
-
   try {
-    console.log(`[SOAP] Request started for ${su} (${monthKey || "current"})`);
-    const response = await axios.post(
-      "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_waybills_v1",
-      xmlBody,
-      {
-        headers: {
-          "Content-Type": "text/xml; charset=UTF-8",
-          SOAPAction: "http://tempuri.org/get_waybills_v1",
-          "Accept-Charset": "UTF-8",
-        },
-        timeout: 120000,
-        responseType: "arraybuffer",
-      }
-    );
-
-    if (!response?.data) {
-      throw new Error("Empty response from RS SOAP service");
-    }
-
-    const xml = Buffer.from(response.data).toString("utf8");
-    console.log(`[SOAP] Response length: ${xml.length}`);
+    const xml = await requestWaybillXml({ su, sp }, { start, end });
     const amountMatches = [
       ...xml.matchAll(/<([A-Za-z0-9_:]*?(?:FULL_AMOUNT|AMOUNT))>([\d\s.,-]+)<\/\1>/gi),
     ];
     console.log(`[SOAP] Found ${amountMatches.length} amounts`);
+    const statusCode = extractSoapStatus(xml);
+    if (typeof statusCode === "number") {
+      handleSoapStatus(statusCode, su);
+    }
 
     if (!amountMatches.length) {
       console.log("[SOAP] Total parsed: 0.00");
@@ -289,8 +316,80 @@ async function fetchWaybillTotal({ su, sp }, monthKey) {
     return { total, message: "OK" };
   } catch (err) {
     console.error("[SOAP] Request failed:", err?.message || err);
+    if (err?.isSoapError) {
+      throw err;
+    }
     const error = new Error(err?.message || "SOAP request failed");
     error.isSoapError = true;
+    throw error;
+  }
+}
+
+async function requestWaybillXml(credentials, range, overrideKey) {
+  const key = sanitizeSoapDateKey(overrideKey || soapDateKey);
+  const startTag = `${key}_s`;
+  const endTag = `${key}_e`;
+  const xmlBody = `
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <get_waybills_v1 xmlns="http://tempuri.org/">
+      <su>${credentials.su}</su>
+      <sp>${credentials.sp}</sp>
+      <${startTag}>${range.start}</${startTag}>
+      <${endTag}>${range.end}</${endTag}>
+    </get_waybills_v1>
+  </soap:Body>
+</soap:Envelope>`.trim();
+
+  console.log(
+    `[SOAP] Request started for ${credentials.su} (${range.start}..${range.end}) using ${key}_s/e`
+  );
+  const response = await axios.post(
+    "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_waybills_v1",
+    xmlBody,
+    {
+      headers: {
+        "Content-Type": "text/xml; charset=UTF-8",
+        SOAPAction: "http://tempuri.org/get_waybills_v1",
+        "Accept-Charset": "UTF-8",
+      },
+      timeout: 120000,
+      responseType: "arraybuffer",
+    }
+  );
+
+  if (!response?.data) {
+    throw new Error("Empty response from RS SOAP service");
+  }
+
+  const xml = Buffer.from(response.data).toString("utf8");
+  console.log(`[SOAP] Response length: ${xml.length}`);
+  return xml;
+}
+
+function extractSoapStatus(xml) {
+  const match = xml.match(/<STATUS>(-?\d+)<\/STATUS>/i);
+  if (!match) return null;
+  const value = Number.parseInt(match[1], 10);
+  return Number.isNaN(value) ? null : value;
+}
+
+function handleSoapStatus(statusCode, su) {
+  if (statusCode === -1072) {
+    const error = new Error("User lacks RS.ge permissions");
+    error.isSoapError = true;
+    error.soapStatus = -1072;
+    error.httpStatus = 403;
+    error.su = su;
+    throw error;
+  }
+  if (statusCode === -100) {
+    const error = new Error("RS.ge rejected date parameters");
+    error.isSoapError = true;
+    error.soapStatus = -100;
+    error.su = su;
     throw error;
   }
 }
@@ -364,6 +463,11 @@ app.post("/login", async (req, res) => {
 
     if (!user.active) {
       return res.status(403).json({ success: false, message: "User is inactive" });
+    }
+
+    if (!user.sp || !String(user.sp).trim()) {
+      console.warn(`[AUTH] Missing SP for ${su}`);
+      return res.status(403).json({ success: false, message: "Password not on file" });
     }
 
     if (!sp) {
@@ -537,12 +641,18 @@ app.post("/waybill/total", async (req, res) => {
     return res.status(400).json({ message: "Missing token" });
   }
 
+  let user;
   try {
     const decoded = decodeToken(token);
-    const user = await findActiveUser(decoded.su);
+    user = await findActiveUser(decoded.su);
 
     if (!user || !user.active) {
       return res.status(401).json({ message: "User revoked or not found" });
+    }
+
+    if (!user.sp || !String(user.sp).trim()) {
+      console.warn(`[AUTH] Missing SP for ${decoded.su}`);
+      return res.status(403).json({ success: false, message: "Password not on file" });
     }
 
     if (!decoded.sp) {
@@ -561,6 +671,14 @@ app.post("/waybill/total", async (req, res) => {
     const total = Number.isFinite(result) ? Number(result) : 0;
     return res.json({ total: total.toFixed(2), message: "OK" });
   } catch (err) {
+    if (err?.soapStatus === -1072) {
+      console.warn(
+        `[SOAP] SU ${user?.su || "unknown"} returned STATUS -1072 (no permission)`
+      );
+      return res
+        .status(403)
+        .json({ success: false, code: -1072, message: "User lacks RS.ge permissions" });
+    }
     console.error("Waybill total failed:", err?.message || err);
     if (err?.isSoapError) {
       return res.status(502).json({
