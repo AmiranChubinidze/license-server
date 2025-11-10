@@ -5,6 +5,7 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
+const xml2js = require("xml2js");
 const { db, run, get, all, DB_PATH } = require("./db");
 const dbExistsOnStartup = fs.existsSync(DB_PATH);
 console.log(`[DB] Path: ${DB_PATH} | exists: ${dbExistsOnStartup}`);
@@ -43,7 +44,41 @@ const SOAP_DATE_KEYS = ["create_date", "last_update_date"];
 const SOAP_DATE_KEY_OVERRIDE = process.env.SOAP_DATE_KEY
   ? sanitizeSoapDateKey(process.env.SOAP_DATE_KEY)
   : null;
-let soapDateKey = SOAP_DATE_KEY_OVERRIDE || "last_update_date";
+let soapDateKey = SOAP_DATE_KEY_OVERRIDE || SOAP_DATE_KEYS[0];
+const WAYBILL_ALLOWED_STATUSES = new Set(["1", "3", "4"]);
+const WAYBILL_EXCLUDED_TYPE = "6";
+const WAYBILL_AMOUNT_FIELDS = ["FULL_AMOUNT", "AMOUNT", "TOTAL_AMOUNT", "SUM_AMOUNT"];
+const WAYBILL_ID_KEYS = ["WAYBILL_ID", "WB_ID", "ID", "DOC_ID", "WAYBILLID"];
+const WAYBILL_PARENT_KEYS = ["PAR_ID", "PARENT_ID", "CORRECTED_ID", "CORR_ID"];
+const WAYBILL_SELLER_KEYS = ["SELER_UN_ID", "SELLER_UN_ID", "SELLER_ID"];
+const WAYBILL_BUYER_TIN_KEYS = ["BUYER_TIN", "BUYERID", "BUYER_ID"];
+const WAYBILL_TRANSPORTER_TIN_KEYS = ["TRANSPORTER_TIN", "TRANSPORTERID", "TRANSPORTER_ID"];
+const WAYBILL_CANDIDATE_FIELDS = new Set([
+  "FULL_AMOUNT",
+  "AMOUNT",
+  "TOTAL_AMOUNT",
+  "SUM_AMOUNT",
+  "STATUS",
+  "TYPE",
+  "PAR_ID",
+  "PARENT_ID",
+  "WAYBILL_ID",
+  "WB_ID",
+  "ID",
+  "DOC_ID",
+  "SELER_UN_ID",
+  "SELLER_UN_ID",
+  "BUYER_TIN",
+]);
+const { stripPrefix } = xml2js.processors;
+const SOAP_DATASET_PARSER = new xml2js.Parser({
+  explicitArray: false,
+  ignoreAttrs: false,
+  tagNameProcessors: [stripPrefix],
+  attrNameProcessors: [stripPrefix],
+  trim: true,
+});
+const WAYBILL_FILTER_CONFIG = createWaybillFilterConfig(process.env);
 
 const REQUIRED_USER_COLUMNS = [
   {
@@ -245,6 +280,9 @@ function decodeToken(token, options = {}) {
 }
 
 function normalizeAmount(raw) {
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? raw : 0;
+  }
   if (typeof raw !== "string") return 0;
   const cleaned = raw.replace(/\s+/g, "").replace(/,/g, ".").replace(/[^\d.-]/g, "");
   const value = Number.parseFloat(cleaned);
@@ -326,7 +364,9 @@ async function fetchWaybillTotal(credentials, monthKey) {
   const range = buildDateRange(monthKey);
   try {
     const xml = await requestWaybillXml(credentials, range);
-    return summarizeWaybillTotalsFromXml(xml, credentials.su);
+    const summary = await summarizeWaybillTotalsFromXml(xml, credentials.su);
+    logWaybillSummary(summary);
+    return summary;
   } catch (err) {
     if (err?.soapStatus === -1072) {
       try {
@@ -417,52 +457,379 @@ function handleSoapStatus(statusCode, su) {
   }
 }
 
-function summarizeWaybillTotalsFromXml(xml, su) {
+async function summarizeWaybillTotalsFromXml(xml, su) {
   const statusCode = extractSoapStatus(xml);
   if (typeof statusCode === "number") {
     handleSoapStatus(statusCode, su);
   }
 
-  const amountMatches = [
-    ...xml.matchAll(/<([A-Za-z0-9_:]*?(?:FULL_AMOUNT|AMOUNT))>([\d\s.,-]+)<\/\1>/gi),
-  ];
-  console.log(`[SOAP] Found ${amountMatches.length} amounts`);
+  const { records } = await parseWaybillRecords(xml);
+  const processed = records.length;
 
-  if (!amountMatches.length) {
-    console.log("[SOAP] Total parsed: 0.00");
-    return { total: 0, message: "No waybills found" };
+  if (!processed) {
+    return {
+      total: 0,
+      included: 0,
+      excluded: 0,
+      processed: 0,
+      message: "No waybills found",
+    };
   }
 
-  const combined = amountMatches
-    .map((match) => normalizeAmount(match[2] || "0"))
-    .reduce((sum, amount) => sum + amount, 0);
+  const filtered = filterWaybillRecords(records, WAYBILL_FILTER_CONFIG);
+  const summary = {
+    total: Number(filtered.total.toFixed(2)),
+    included: filtered.included,
+    excluded: filtered.excluded,
+    processed,
+    message: "OK",
+  };
 
-  const total = Number(combined.toFixed(2));
-  console.log(`[SOAP] Total parsed: ${total.toFixed(2)}`);
-  return { total, message: "OK" };
+  if (filtered.logs?.length) {
+    summary.logs = filtered.logs;
+  }
+
+  return summary;
+}
+
+function logWaybillSummary(summary) {
+  const processed = Number.isFinite(summary?.processed) ? summary.processed : 0;
+  const included = Number.isFinite(summary?.included) ? summary.included : 0;
+  const excluded = Number.isFinite(summary?.excluded) ? summary.excluded : 0;
+  const total = Number.isFinite(summary?.total) ? Number(summary.total).toFixed(2) : "0.00";
+  console.log(
+    `[WAYBILL_SUMMARY] Total count: ${processed} | Included: ${included} | Excluded: ${excluded} | Total: ${total}`
+  );
+}
+
+function extractWaybillDatasetXml(xml) {
+  if (typeof xml !== "string") {
+    return "";
+  }
+  const match = xml.match(/<get_waybills_v1Result[^>]*>([\s\S]*?)<\/get_waybills_v1Result>/i);
+  if (!match) {
+    return "";
+  }
+  let payload = match[1]?.trim() || "";
+  if (!payload) {
+    return "";
+  }
+  if (payload.startsWith("<![CDATA[")) {
+    payload = payload.replace(/^<!\[CDATA\[/i, "").replace(/\]\]>$/i, "");
+  }
+  return decodeHtmlEntities(payload);
+}
+
+async function parseWaybillRecords(xml) {
+  try {
+    const datasetXml = extractWaybillDatasetXml(xml);
+    if (!datasetXml) {
+      return { records: [] };
+    }
+    const dataset = await SOAP_DATASET_PARSER.parseStringPromise(datasetXml);
+    const records = collectWaybillRows(dataset);
+    return { records };
+  } catch (err) {
+    console.error("[SOAP] Failed to parse waybill dataset:", err?.message || err);
+    return { records: [] };
+  }
+}
+
+function decodeHtmlEntities(payload) {
+  if (typeof payload !== "string") return "";
+  return payload
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function collectWaybillRows(tree) {
+  const rows = [];
+  const seen = new Set();
+
+  function walk(node) {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+    if (seen.has(node)) {
+      return;
+    }
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+      node.forEach((child) => walk(child));
+      return;
+    }
+
+    if (looksLikeWaybillRecord(node)) {
+      rows.push(normalizeWaybillRecord(node));
+      return;
+    }
+
+    for (const value of Object.values(node)) {
+      walk(value);
+    }
+  }
+
+  walk(tree);
+  return rows;
+}
+
+function looksLikeWaybillRecord(node) {
+  if (!node || typeof node !== "object") {
+    return false;
+  }
+  const keys = Object.keys(node).map((key) => key.toUpperCase());
+  const markerHits = keys.filter((key) => WAYBILL_CANDIDATE_FIELDS.has(key));
+  const hasAmount = keys.some((key) => WAYBILL_AMOUNT_FIELDS.includes(key));
+  return markerHits.length >= 2 && hasAmount;
+}
+
+function normalizeWaybillRecord(node) {
+  const normalized = {};
+  for (const [key, value] of Object.entries(node)) {
+    const upperKey = key.toUpperCase();
+    normalized[upperKey] = extractScalarValue(value);
+  }
+  return normalized;
+}
+
+function extractScalarValue(value) {
+  if (Array.isArray(value)) {
+    if (value.length === 1) {
+      return extractScalarValue(value[0]);
+    }
+    return value.map((entry) => extractScalarValue(entry));
+  }
+  if (value && typeof value === "object") {
+    if (Object.prototype.hasOwnProperty.call(value, "_")) {
+      return extractScalarValue(value._);
+    }
+    return value;
+  }
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  return value ?? "";
+}
+
+function filterWaybillRecords(records, config) {
+  const logBuffer = config.debugLogs ? [] : null;
+  const included = [];
+  let excludedCount = 0;
+
+  const { correctedParentIds, childByParentId } = buildCorrectionIndex(records);
+
+  for (const record of records) {
+    const reason = determineExclusionReason(record, config, {
+      correctedParentIds,
+      childByParentId,
+    });
+    if (reason) {
+      excludedCount += 1;
+      emitFilterLog(logBuffer, reason);
+      continue;
+    }
+    included.push(record);
+  }
+
+  const total = included.reduce((acc, record) => acc + extractAmountFromRecord(record), 0);
+
+  return {
+    total,
+    included: included.length,
+    excluded: excludedCount,
+    logs: logBuffer || undefined,
+  };
+}
+
+function extractAmountFromRecord(record) {
+  for (const key of WAYBILL_AMOUNT_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+      continue;
+    }
+    const rawValue = Array.isArray(record[key]) ? record[key][0] : record[key];
+    const amount = normalizeAmount(rawValue);
+    if (Number.isFinite(amount)) {
+      return amount;
+    }
+  }
+  return 0;
+}
+
+function buildCorrectionIndex(records) {
+  const correctedParentIds = new Set();
+  const childByParentId = new Map();
+  for (const record of records) {
+    const parentId = resolveParentId(record);
+    const childId = resolveWaybillId(record);
+    if (parentId) {
+      correctedParentIds.add(parentId);
+      if (childId) {
+        childByParentId.set(parentId, childId);
+      }
+    }
+  }
+  return { correctedParentIds, childByParentId };
+}
+
+function resolveWaybillId(record) {
+  const raw = getFirstValue(record, WAYBILL_ID_KEYS);
+  if (raw === undefined || raw === null || raw === "") return "";
+  return String(raw).trim();
+}
+
+function resolveParentId(record) {
+  const raw = getFirstValue(record, WAYBILL_PARENT_KEYS);
+  if (raw === undefined || raw === null || raw === "") return "";
+  return String(raw).trim();
+}
+
+function getFirstValue(record, keys) {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) {
+      const value = record[key];
+      if (Array.isArray(value)) {
+        return value[0];
+      }
+      return value;
+    }
+  }
+  return "";
+}
+
+function determineExclusionReason(record, config, correctionContext) {
+  const id = resolveWaybillId(record) || "unknown";
+  const status = String(record.STATUS ?? "").trim();
+  const normalizedStatus = status ? String(Number(status) || status).trim() : "";
+  if (normalizedStatus && !WAYBILL_ALLOWED_STATUSES.has(normalizedStatus)) {
+    return `Skipped STATUS=${normalizedStatus} waybill ID=${id}`;
+  }
+
+  const typeValue = String(record.TYPE ?? "").trim();
+  const normalizedType = typeValue ? String(Number(typeValue) || typeValue).trim() : "";
+  if (normalizedType === WAYBILL_EXCLUDED_TYPE) {
+    return `Excluded TYPE=${WAYBILL_EXCLUDED_TYPE} sub-waybill ID=${id}`;
+  }
+
+  if (id && correctionContext.correctedParentIds.has(id)) {
+    const child = correctionContext.childByParentId.get(id);
+    if (child) {
+      return `Excluded corrected parent ID=${id} replaced_by=${child}`;
+    }
+    return `Excluded corrected parent ID=${id}`;
+  }
+
+  const sellerUnId = String(getFirstValue(record, WAYBILL_SELLER_KEYS) || "").trim();
+  const buyerTin = normalizeTin(getFirstValue(record, WAYBILL_BUYER_TIN_KEYS));
+  const transporterTin = normalizeTin(getFirstValue(record, WAYBILL_TRANSPORTER_TIN_KEYS));
+
+  const hasPartyContext = Boolean(config.mySellerUnId || config.myTin);
+  const isSeller = Boolean(config.mySellerUnId && sellerUnId && config.mySellerUnId === sellerUnId);
+  const isBuyer = Boolean(config.myTin && buyerTin && config.myTin === buyerTin);
+  const transporterMatches =
+    Boolean(config.myTin) && Boolean(transporterTin) && config.myTin === transporterTin;
+
+  if (hasPartyContext && !isSeller && !isBuyer) {
+    if (transporterMatches) {
+      return `Excluded transporter-only waybill ID=${id}`;
+    }
+    if (transporterTin && config.myTin && transporterTin !== config.myTin) {
+      return `Excluded transporter mismatch waybill ID=${id}`;
+    }
+    return `Excluded non-matching party waybill ID=${id}`;
+  }
+
+  return null;
+}
+
+function emitFilterLog(buffer, message) {
+  if (!buffer) {
+    return;
+  }
+  const entry = `[WAYBILL_FILTER] ${message}`;
+  buffer.push(entry);
+  console.log(entry);
+}
+
+function createWaybillFilterConfig(env = {}) {
+  const myTin = normalizeTin(env.MY_TIN || "");
+  const mySellerUnId = (env.MY_SELLER_UN_ID || "").trim();
+  const debugLogs = parseBoolean(env.DEBUG_FILTER_LOGS);
+
+  if (!myTin) {
+    console.warn("[WAYBILL_FILTER] MY_TIN not configured; buyer filtering limited");
+  }
+  if (!mySellerUnId) {
+    console.warn("[WAYBILL_FILTER] MY_SELLER_UN_ID not configured; seller filtering limited");
+  }
+  if (debugLogs) {
+    console.log("[WAYBILL_FILTER] Debug logging enabled");
+  }
+
+  return { myTin, mySellerUnId, debugLogs };
+}
+
+function parseBoolean(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+  }
+  return false;
+}
+
+function normalizeTin(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return String(value).replace(/\s+/g, "");
 }
 
 async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3) {
   const segments = chunkDateRange(range, windowDays);
   if (!segments.length) {
-    return { total: 0, message: "No waybills found", logs: [] };
+    const emptySummary = {
+      total: 0,
+      included: 0,
+      excluded: 0,
+      processed: 0,
+      message: "No waybills found",
+    };
+    logWaybillSummary(emptySummary);
+    return emptySummary;
   }
   console.warn(
     `[SOAP] Range too wide for ${credentials.su}; retrying in ${segments.length} chunk(s) of ${windowDays} day(s)`
   );
-  const logs = [];
+  const debugLogs = WAYBILL_FILTER_CONFIG.debugLogs ? [] : null;
   let combinedTotal = 0;
+  let combinedIncluded = 0;
+  let combinedExcluded = 0;
+  let combinedProcessed = 0;
+
   for (const segment of segments) {
     try {
       const xml = await requestWaybillXml(credentials, segment);
-      const summary = summarizeWaybillTotalsFromXml(xml, credentials.su);
-      const segmentTotal = Number.isFinite(summary.total) ? Number(summary.total) : 0;
-      combinedTotal += segmentTotal;
-      logs.push({
-        range: `${segment.start}..${segment.end}`,
-        total: Number(segmentTotal.toFixed(2)),
-        message: summary.message || "OK",
-      });
+      const summary = await summarizeWaybillTotalsFromXml(xml, credentials.su);
+      combinedTotal += Number(summary.total) || 0;
+      combinedIncluded += Number(summary.included) || 0;
+      combinedExcluded += Number(summary.excluded) || 0;
+      combinedProcessed += Number(summary.processed) || 0;
+      if (debugLogs && Array.isArray(summary.logs) && summary.logs.length) {
+        debugLogs.push(...summary.logs);
+      }
+      if (debugLogs) {
+        debugLogs.push(
+          `[WAYBILL_FILTER] Segment ${segment.start}..${segment.end} total=${Number(
+            summary.total
+          ).toFixed(2)}`
+        );
+      }
     } catch (err) {
       if (err?.soapStatus === -1072 && windowDays > 1) {
         const nextWindow = Math.max(1, Math.floor(windowDays / 2));
@@ -474,21 +841,31 @@ async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3) {
           segment,
           nextWindow
         );
-        const nestedTotal = Number(nested.total) || 0;
-        combinedTotal += nestedTotal;
-        if (Array.isArray(nested.logs)) {
-          logs.push(...nested.logs);
+        combinedTotal += Number(nested.total) || 0;
+        combinedIncluded += Number(nested.included) || 0;
+        combinedExcluded += Number(nested.excluded) || 0;
+        combinedProcessed += Number(nested.processed) || 0;
+        if (debugLogs && Array.isArray(nested.logs) && nested.logs.length) {
+          debugLogs.push(...nested.logs);
         }
         continue;
       }
       throw err;
     }
   }
-  return {
+
+  const finalSummary = {
     total: Number(combinedTotal.toFixed(2)),
+    included: combinedIncluded,
+    excluded: combinedExcluded,
+    processed: combinedProcessed,
     message: "OK",
-    logs,
   };
+  if (debugLogs?.length) {
+    finalSummary.logs = debugLogs;
+  }
+  logWaybillSummary(finalSummary);
+  return finalSummary;
 }
 
 function ensureDatabase(res) {
@@ -757,20 +1134,27 @@ app.post("/waybill/total", async (req, res) => {
     }
 
     const result = await fetchWaybillTotal({ su: user.su, sp: effectiveSp }, month);
-    if (result && typeof result === "object" && result !== null) {
+    if (result && typeof result === "object") {
       const totalValue = Number.isFinite(result.total) ? Number(result.total) : 0;
       const payload = {
-        total: totalValue.toFixed(2),
+        total: Number(totalValue.toFixed(2)),
+        included: Number.isFinite(result.included) ? result.included : 0,
+        excluded: Number.isFinite(result.excluded) ? result.excluded : 0,
         message: result.message || "OK",
       };
-      if (Array.isArray(result.logs)) {
+      if (Array.isArray(result.logs) && result.logs.length) {
         payload.logs = result.logs;
       }
       return res.json(payload);
     }
 
-    const total = Number.isFinite(result) ? Number(result) : 0;
-    return res.json({ total: total.toFixed(2), message: "OK" });
+    const fallbackTotal = Number.isFinite(result) ? Number(result) : 0;
+    return res.json({
+      total: Number(fallbackTotal.toFixed(2)),
+      included: 0,
+      excluded: 0,
+      message: "OK",
+    });
   } catch (err) {
     if (err?.soapStatus === -1072) {
       console.warn(
