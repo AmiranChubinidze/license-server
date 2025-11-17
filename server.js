@@ -314,6 +314,19 @@ function buildDateRange(monthKey) {
   };
 }
 
+function countDaysInclusive(range) {
+  if (!range?.start || !range?.end) {
+    return Infinity;
+  }
+  const startDate = new Date(`${range.start}T00:00:00Z`);
+  const endDate = new Date(`${range.end}T00:00:00Z`);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return Infinity;
+  }
+  const diffMs = endDate.getTime() - startDate.getTime();
+  return Math.floor(diffMs / (24 * 60 * 60 * 1000)) + 1;
+}
+
 function formatIsoDateUTC(date) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(
     date.getUTCDate()
@@ -360,8 +373,31 @@ function sanitizeSoapDateKey(key) {
   return SOAP_DATE_KEYS.includes(key) ? key : SOAP_DATE_KEYS[0];
 }
 
+function shouldRetryWithSmallerWindow(err, windowDays) {
+  if (windowDays <= 1) {
+    return false;
+  }
+  if (err?.soapStatus === -1072) {
+    return true;
+  }
+  if (err?.code === "ECONNABORTED") {
+    return true;
+  }
+  const message = String(err?.message || "").toLowerCase();
+  return Boolean(message && message.includes("timeout"));
+}
+
+const MAX_SOAP_WINDOW_DAYS = 3;
+
 async function fetchWaybillTotal(credentials, monthKey) {
   const range = buildDateRange(monthKey);
+  const rangeDays = countDaysInclusive(range);
+  if (rangeDays > MAX_SOAP_WINDOW_DAYS) {
+    console.warn(
+      `[SOAP] Range ${range.start}..${range.end} exceeds ${MAX_SOAP_WINDOW_DAYS} days; chunking immediately`
+    );
+    return await fetchWaybillTotalInChunks(credentials, range, MAX_SOAP_WINDOW_DAYS, range);
+  }
   try {
     const xml = await requestWaybillXml(credentials, range);
     const summary = await summarizeWaybillTotalsFromXml(xml, credentials.su, range);
@@ -880,7 +916,7 @@ async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3, tar
         );
       }
     } catch (err) {
-      if (err?.soapStatus === -1072 && windowDays > 1) {
+      if (shouldRetryWithSmallerWindow(err, windowDays)) {
         const nextWindow = Math.max(1, Math.floor(windowDays / 2));
         console.warn(
           `[SOAP] Segment ${segment.start}..${segment.end} still too wide; retrying with ${nextWindow}-day window`
