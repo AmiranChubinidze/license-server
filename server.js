@@ -19,7 +19,7 @@ const allowedOrigins = [
   "https://amnairi.onrender.com",
   "https://license-server-z3vf.onrender.com",
   "http://localhost:3000",
-  "chrome-extension://hmkndkpjehkgomaedmaghccedjfgkkeb",
+  "chrome-extension://modggbahbkbgcmpnhjbfjfpncolajcde",
 ];
 app.use(
   cors({
@@ -1290,3 +1290,4 @@ initDb()
   .catch((err) => {
     console.error("DB initialization failed:", err);
   });
+
