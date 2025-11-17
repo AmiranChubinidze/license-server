@@ -364,7 +364,7 @@ async function fetchWaybillTotal(credentials, monthKey) {
   const range = buildDateRange(monthKey);
   try {
     const xml = await requestWaybillXml(credentials, range);
-    const summary = await summarizeWaybillTotalsFromXml(xml, credentials.su);
+    const summary = await summarizeWaybillTotalsFromXml(xml, credentials.su, range);
     logWaybillSummary(summary);
     return summary;
   } catch (err) {
@@ -457,7 +457,7 @@ function handleSoapStatus(statusCode, su) {
   }
 }
 
-async function summarizeWaybillTotalsFromXml(xml, su) {
+async function summarizeWaybillTotalsFromXml(xml, su, targetRange) {
   const statusCode = extractSoapStatus(xml);
   if (typeof statusCode === "number") {
     handleSoapStatus(statusCode, su);
@@ -476,7 +476,7 @@ async function summarizeWaybillTotalsFromXml(xml, su) {
     };
   }
 
-  const filtered = filterWaybillRecords(records, WAYBILL_FILTER_CONFIG);
+  const filtered = filterWaybillRecords(records, WAYBILL_FILTER_CONFIG, targetRange);
   const summary = {
     total: Number(filtered.total.toFixed(2)),
     included: filtered.included,
@@ -615,7 +615,7 @@ function extractScalarValue(value) {
   return value ?? "";
 }
 
-function filterWaybillRecords(records, config) {
+function filterWaybillRecords(records, config, targetRange) {
   const logBuffer = config.debugLogs ? [] : null;
   const included = [];
   let excludedCount = 0;
@@ -626,6 +626,7 @@ function filterWaybillRecords(records, config) {
     const reason = determineExclusionReason(record, config, {
       correctedParentIds,
       childByParentId,
+      targetRange,
     });
     if (reason) {
       excludedCount += 1;
@@ -700,7 +701,7 @@ function getFirstValue(record, keys) {
   return "";
 }
 
-function determineExclusionReason(record, config, correctionContext) {
+function determineExclusionReason(record, config, correctionContext = {}) {
   const id = resolveWaybillId(record) || "unknown";
   const status = String(record.STATUS ?? "").trim();
   const normalizedStatus = status ? String(Number(status) || status).trim() : "";
@@ -714,8 +715,8 @@ function determineExclusionReason(record, config, correctionContext) {
     return `Excluded TYPE=${WAYBILL_EXCLUDED_TYPE} sub-waybill ID=${id}`;
   }
 
-  if (id && correctionContext.correctedParentIds.has(id)) {
-    const child = correctionContext.childByParentId.get(id);
+  if (id && correctionContext.correctedParentIds?.has(id)) {
+    const child = correctionContext.childByParentId?.get(id);
     if (child) {
       return `Excluded corrected parent ID=${id} replaced_by=${child}`;
     }
@@ -742,7 +743,55 @@ function determineExclusionReason(record, config, correctionContext) {
     return `Excluded non-matching party waybill ID=${id}`;
   }
 
+  if (correctionContext?.targetRange) {
+    const { start, end } = correctionContext.targetRange;
+    const effectiveDate = getEffectiveDate(record);
+    if (!effectiveDate) {
+      return `Excluded waybill ID=${id} missing effective date for range ${start}..${end}`;
+    }
+    if (effectiveDate < start || effectiveDate > end) {
+      return `Excluded waybill ID=${id} effective_date=${effectiveDate} outside ${start}..${end}`;
+    }
+  }
+
   return null;
+}
+
+// RS.ge returns rows by last_update_date, but financial month totals must be based on the
+// original business dates. We derive a single “effective date” per waybill by checking
+// BEGIN_DATE → ACTIVATE_DATE → CREATE_DATE (in that order) and normalizing it to YYYY-MM-DD.
+function getEffectiveDate(waybill) {
+  const candidates = ["BEGIN_DATE", "ACTIVATE_DATE", "CREATE_DATE"];
+  for (const key of candidates) {
+    if (!Object.prototype.hasOwnProperty.call(waybill, key)) {
+      continue;
+    }
+    const raw = Array.isArray(waybill[key]) ? waybill[key][0] : waybill[key];
+    const normalized = normalizeWaybillDate(raw);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function normalizeWaybillDate(raw) {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  const value = String(raw).trim();
+  if (!value) {
+    return null;
+  }
+  const match = value.match(/(\d{4})[-/.](\d{2})[-/.](\d{2})/);
+  if (match) {
+    return `${match[1]}-${match[2]}-${match[3]}`;
+  }
+  const parsed = new Date(value.replace(" ", "T"));
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return formatIsoDateUTC(parsed);
 }
 
 function emitFilterLog(buffer, message) {
@@ -790,7 +839,7 @@ function normalizeTin(value) {
   return String(value).replace(/\s+/g, "");
 }
 
-async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3) {
+async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3, targetRange = range) {
   const segments = chunkDateRange(range, windowDays);
   if (!segments.length) {
     const emptySummary = {
@@ -815,7 +864,7 @@ async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3) {
   for (const segment of segments) {
     try {
       const xml = await requestWaybillXml(credentials, segment);
-      const summary = await summarizeWaybillTotalsFromXml(xml, credentials.su);
+      const summary = await summarizeWaybillTotalsFromXml(xml, credentials.su, targetRange);
       combinedTotal += Number(summary.total) || 0;
       combinedIncluded += Number(summary.included) || 0;
       combinedExcluded += Number(summary.excluded) || 0;
@@ -839,7 +888,8 @@ async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3) {
         const nested = await fetchWaybillTotalInChunks(
           credentials,
           segment,
-          nextWindow
+          nextWindow,
+          targetRange
         );
         combinedTotal += Number(nested.total) || 0;
         combinedIncluded += Number(nested.included) || 0;
