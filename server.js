@@ -21,10 +21,12 @@ const allowedOrigins = [
   "http://localhost:3000",
   "chrome-extension://hbbbkkjdjngfagckieciipdnbinbepon",
 ];
+const isExtensionOrigin = (origin) =>
+  typeof origin === "string" && origin.startsWith("chrome-extension://");
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin || allowedOrigins.includes(origin) || isExtensionOrigin(origin)) {
         callback(null, true);
       } else {
         callback(new Error("Not allowed by CORS"));
@@ -274,7 +276,12 @@ const issueAccessToken = (user, { sp } = {}) =>
     expiresIn: "24h",
     extraClaims: sp ? { sp } : undefined,
   });
-const issueRefreshToken = (user) => issueToken(user, { type: "refresh", expiresIn: "30d" });
+const issueRefreshToken = (user, { sp } = {}) =>
+  issueToken(user, {
+    type: "refresh",
+    expiresIn: "30d",
+    extraClaims: sp ? { sp } : undefined,
+  });
 
 function decodeToken(token, options = {}) {
   return jwt.verify(token, JWT_SECRET, options);
@@ -983,6 +990,33 @@ function selectEffectiveSp(userSp, providedSp, su) {
   return null;
 }
 
+async function buildRefreshedSession(incomingToken) {
+  const decoded = decodeToken(incomingToken);
+  if (decoded.type && decoded.type !== "refresh") {
+    const error = new Error("Refresh token required");
+    error.status = 400;
+    throw error;
+  }
+
+  const user = await findActiveUser(decoded.su);
+  if (!user || !user.active) {
+    const error = new Error("User revoked or not found");
+    error.status = 401;
+    throw error;
+  }
+
+  const effectiveSp = selectEffectiveSp(user.sp, decoded.sp, decoded.su);
+  if (!effectiveSp) {
+    const error = new Error("Session expired; please login again");
+    error.status = 401;
+    throw error;
+  }
+
+  const token = issueAccessToken(user, { sp: effectiveSp });
+  const refreshToken = issueRefreshToken(user, { sp: effectiveSp });
+  return { token, refreshToken, user: serializeUser(user) };
+}
+
 app.post("/auth", async (req, res) => {
   if (!ensureDatabase(res)) return;
   const su = (req.body?.su || "").trim();
@@ -1052,7 +1086,7 @@ app.post("/login", async (req, res) => {
     }
 
     const token = issueAccessToken(user, { sp: effectiveSp });
-    const refreshToken = issueRefreshToken(user);
+    const refreshToken = issueRefreshToken(user, { sp: effectiveSp });
     return res.json({
       success: true,
       token,
@@ -1086,7 +1120,7 @@ app.post("/loginHybrid", async (req, res) => {
     }
 
     const token = issueAccessToken(user, { sp });
-    const refreshToken = issueRefreshToken(user);
+    const refreshToken = issueRefreshToken(user, { sp });
     return res.json({
       success: true,
       token,
@@ -1145,21 +1179,18 @@ app.post("/refresh", async (req, res) => {
   }
 
   try {
-    const decoded = decodeToken(incoming);
-    if (decoded.type && decoded.type !== "refresh") {
-      return res.status(400).json({ success: false, message: "Refresh token required" });
-    }
-    const user = await findActiveUser(decoded.su);
-
-    if (!user || !user.active) {
-      return res.status(401).json({ success: false, message: "User revoked or not found" });
-    }
-
-    return res
-      .status(401)
-      .json({ success: false, message: "Re-authentication required" });
+    const session = await buildRefreshedSession(incoming);
+    return res.json({ success: true, ...session });
   } catch (err) {
-    return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    const isJwtError =
+      err?.name === "JsonWebTokenError" ||
+      err?.name === "TokenExpiredError" ||
+      err?.name === "NotBeforeError";
+    const status = err?.status || err?.statusCode || (isJwtError ? 401 : 500);
+    return res.status(status).json({
+      success: false,
+      message: err?.message || "Token refresh failed",
+    });
   }
 });
 
@@ -1167,21 +1198,23 @@ app.post("/auth/refresh", async (req, res) => {
   if (!ensureDatabase(res)) return;
   const token = req.body?.token;
   if (!token) {
-    return res.status(400).json({ message: "Missing token" });
+    return res.status(400).json({ success: false, message: "Missing token" });
   }
 
   try {
-    const decoded = decodeToken(token, { ignoreExpiration: false });
-    const user = await findActiveUser(decoded.su);
-
-    if (!user || !user.active) {
-      return res.status(401).json({ message: "User revoked or not found" });
-    }
-
-    return res.status(401).json({ message: "Re-authentication required" });
+    const session = await buildRefreshedSession(token);
+    return res.json({ success: true, ...session });
   } catch (err) {
     console.warn("Token refresh failed:", err?.message || err);
-    return res.status(401).json({ message: "Invalid or expired token" });
+    const isJwtError =
+      err?.name === "JsonWebTokenError" ||
+      err?.name === "TokenExpiredError" ||
+      err?.name === "NotBeforeError";
+    const status = err?.status || err?.statusCode || (isJwtError ? 401 : 500);
+    return res.status(status).json({
+      success: false,
+      message: err?.message || "Invalid or expired token",
+    });
   }
 });
 
@@ -1215,7 +1248,7 @@ app.post("/waybill/total", async (req, res) => {
   const token = extractToken(req);
   const month = req.body?.month;
   if (!token) {
-    return res.status(400).json({ message: "Missing token" });
+    return res.status(400).json({ success: false, message: "Missing token" });
   }
 
   let user;
@@ -1224,18 +1257,19 @@ app.post("/waybill/total", async (req, res) => {
     user = await findActiveUser(decoded.su);
 
     if (!user || !user.active) {
-      return res.status(401).json({ message: "User revoked or not found" });
+      return res.status(401).json({ success: false, message: "User revoked or not found" });
     }
 
     const effectiveSp = selectEffectiveSp(user.sp, decoded.sp, decoded.su);
     if (!effectiveSp) {
-      return res.status(401).json({ message: "Session expired; please login again" });
+      return res.status(401).json({ success: false, message: "Session expired; please login again" });
     }
 
     const result = await fetchWaybillTotal({ su: user.su, sp: effectiveSp }, month);
     if (result && typeof result === "object") {
       const totalValue = Number.isFinite(result.total) ? Number(result.total) : 0;
       const payload = {
+        success: true,
         total: Number(totalValue.toFixed(2)),
         included: Number.isFinite(result.included) ? result.included : 0,
         excluded: Number.isFinite(result.excluded) ? result.excluded : 0,
@@ -1249,6 +1283,7 @@ app.post("/waybill/total", async (req, res) => {
 
     const fallbackTotal = Number.isFinite(result) ? Number(result) : 0;
     return res.json({
+      success: true,
       total: Number(fallbackTotal.toFixed(2)),
       included: 0,
       excluded: 0,
@@ -1268,6 +1303,7 @@ app.post("/waybill/total", async (req, res) => {
     console.error("Waybill total failed:", err?.message || err);
     if (err?.isSoapError) {
       return res.status(502).json({
+        success: false,
         message: "RS.ge SOAP error",
         details: err.message || "SOAP request failed",
       });
@@ -1278,12 +1314,12 @@ app.post("/waybill/total", async (req, res) => {
       err?.name === "TokenExpiredError" ||
       err?.name === "NotBeforeError";
     if (isJwtError) {
-      return res.status(401).json({ message: "Invalid or expired token" });
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
     }
 
     return res
       .status(500)
-      .json({ message: err?.message || "Failed to calculate total" });
+      .json({ success: false, message: err?.message || "Failed to calculate total" });
   }
 });
 
