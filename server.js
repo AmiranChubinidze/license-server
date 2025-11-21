@@ -19,7 +19,7 @@ const allowedOrigins = [
   "https://amnairi.onrender.com",
   "https://license-server-z3vf.onrender.com",
   "http://localhost:3000",
-  "chrome-extension://modggbahbkbgcmpnhjbfjfpncolajcde",
+  "chrome-extension://hbbbkkjdjngfagckieciipdnbinbepon",
 ];
 app.use(
   cors({
@@ -45,12 +45,13 @@ const SOAP_DATE_KEY_OVERRIDE = process.env.SOAP_DATE_KEY
   ? sanitizeSoapDateKey(process.env.SOAP_DATE_KEY)
   : null;
 let soapDateKey = SOAP_DATE_KEY_OVERRIDE || SOAP_DATE_KEYS[0];
-const WAYBILL_ALLOWED_STATUSES = new Set(["1", "3", "4"]);
+const WAYBILL_ALLOWED_STATUSES = new Set(["1", "2", "8"]);
 const WAYBILL_EXCLUDED_TYPE = "6";
 const WAYBILL_AMOUNT_FIELDS = ["FULL_AMOUNT", "AMOUNT", "TOTAL_AMOUNT", "SUM_AMOUNT"];
 const WAYBILL_ID_KEYS = ["WAYBILL_ID", "WB_ID", "ID", "DOC_ID", "WAYBILLID"];
 const WAYBILL_PARENT_KEYS = ["PAR_ID", "PARENT_ID", "CORRECTED_ID", "CORR_ID"];
 const WAYBILL_SELLER_KEYS = ["SELER_UN_ID", "SELLER_UN_ID", "SELLER_ID"];
+const WAYBILL_SELLER_TIN_KEYS = ["SELLER_TIN"];
 const WAYBILL_BUYER_TIN_KEYS = ["BUYER_TIN", "BUYERID", "BUYER_ID"];
 const WAYBILL_TRANSPORTER_TIN_KEYS = ["TRANSPORTER_TIN", "TRANSPORTERID", "TRANSPORTER_ID"];
 const WAYBILL_CANDIDATE_FIELDS = new Set([
@@ -760,11 +761,14 @@ function determineExclusionReason(record, config, correctionContext = {}) {
   }
 
   const sellerUnId = String(getFirstValue(record, WAYBILL_SELLER_KEYS) || "").trim();
+  const sellerTin = normalizeTin(getFirstValue(record, WAYBILL_SELLER_TIN_KEYS));
   const buyerTin = normalizeTin(getFirstValue(record, WAYBILL_BUYER_TIN_KEYS));
   const transporterTin = normalizeTin(getFirstValue(record, WAYBILL_TRANSPORTER_TIN_KEYS));
 
   const hasPartyContext = Boolean(config.mySellerUnId || config.myTin);
-  const isSeller = Boolean(config.mySellerUnId && sellerUnId && config.mySellerUnId === sellerUnId);
+  const isSeller =
+    Boolean(config.mySellerUnId && sellerUnId && config.mySellerUnId === sellerUnId) ||
+    Boolean(config.myTin && sellerTin && config.myTin === sellerTin);
   const isBuyer = Boolean(config.myTin && buyerTin && config.myTin === buyerTin);
   const transporterMatches =
     Boolean(config.myTin) && Boolean(transporterTin) && config.myTin === transporterTin;
@@ -781,7 +785,7 @@ function determineExclusionReason(record, config, correctionContext = {}) {
 
   if (correctionContext?.targetRange) {
     const { start, end } = correctionContext.targetRange;
-    const effectiveDate = getEffectiveDate(record);
+    const effectiveDate = getEffectiveDate(record, { debug: config.debugLogs });
     if (!effectiveDate) {
       return `Excluded waybill ID=${id} missing effective date for range ${start}..${end}`;
     }
@@ -795,9 +799,10 @@ function determineExclusionReason(record, config, correctionContext = {}) {
 
 // RS.ge returns rows by last_update_date, but financial month totals must be based on the
 // original business dates. We derive a single “effective date” per waybill by checking
-// BEGIN_DATE → ACTIVATE_DATE → CREATE_DATE (in that order) and normalizing it to YYYY-MM-DD.
-function getEffectiveDate(waybill) {
-  const candidates = ["BEGIN_DATE", "ACTIVATE_DATE", "CREATE_DATE"];
+// BEGIN_DATE → ACTIVATE_DATE (in that order) and normalizing it to YYYY-MM-DD.
+function getEffectiveDate(waybill, options = {}) {
+  const debug = Boolean(options?.debug);
+  const candidates = ["BEGIN_DATE", "ACTIVATE_DATE"];
   for (const key of candidates) {
     if (!Object.prototype.hasOwnProperty.call(waybill, key)) {
       continue;
@@ -805,8 +810,16 @@ function getEffectiveDate(waybill) {
     const raw = Array.isArray(waybill[key]) ? waybill[key][0] : waybill[key];
     const normalized = normalizeWaybillDate(raw);
     if (normalized) {
+      if (debug) {
+        console.debug(
+          `[WAYBILL_FILTER] Effective date source=${key} value=${normalized}`
+        );
+      }
       return normalized;
     }
+  }
+  if (debug) {
+    console.debug("[WAYBILL_FILTER] No effective date found (BEGIN_DATE/ACTIVATE_DATE)");
   }
   return null;
 }
