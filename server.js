@@ -47,7 +47,7 @@ const SOAP_DATE_KEY_OVERRIDE = process.env.SOAP_DATE_KEY
   ? sanitizeSoapDateKey(process.env.SOAP_DATE_KEY)
   : null;
 let soapDateKey = SOAP_DATE_KEY_OVERRIDE || SOAP_DATE_KEYS[0];
-const WAYBILL_ALLOWED_STATUSES = new Set(["1", "2", "8"]);
+const WAYBILL_ALLOWED_STATUSES = new Set(["1", "2", "8", "-2"]);
 const WAYBILL_EXCLUDED_TYPE = "6";
 const WAYBILL_AMOUNT_FIELDS = ["FULL_AMOUNT", "AMOUNT", "TOTAL_AMOUNT", "SUM_AMOUNT"];
 const WAYBILL_ID_KEYS = ["WAYBILL_ID", "WB_ID", "ID", "DOC_ID", "WAYBILLID"];
@@ -398,7 +398,12 @@ function shouldRetryWithSmallerWindow(err, windowDays) {
 const MAX_SOAP_WINDOW_DAYS = 3;
 
 async function fetchWaybillTotal(credentials, monthKey, options = {}) {
-  const filterConfig = options.filterConfig || BASE_WAYBILL_FILTER_CONFIG;
+  const captureLists = Boolean(options.captureLists);
+  const baseFilterConfig = options.filterConfig || BASE_WAYBILL_FILTER_CONFIG;
+  const filterConfig =
+    captureLists && !baseFilterConfig.captureLists
+      ? { ...baseFilterConfig, captureLists: true }
+      : baseFilterConfig;
   const range = buildDateRange(monthKey);
   const rangeDays = countDaysInclusive(range);
   if (rangeDays > MAX_SOAP_WINDOW_DAYS) {
@@ -409,6 +414,7 @@ async function fetchWaybillTotal(credentials, monthKey, options = {}) {
       windowDays: MAX_SOAP_WINDOW_DAYS,
       targetRange: range,
       filterConfig,
+      captureLists,
     });
   }
   try {
@@ -535,7 +541,9 @@ async function summarizeWaybillTotalsFromXml(
     };
   }
 
-  const filtered = filterWaybillRecords(records, filterConfig, targetRange);
+  const filtered = filterWaybillRecords(records, filterConfig, targetRange, {
+    captureLists: Boolean(filterConfig.captureLists),
+  });
   const summary = {
     total: Number(filtered.total.toFixed(2)),
     included: filtered.included,
@@ -546,6 +554,10 @@ async function summarizeWaybillTotalsFromXml(
 
   if (filtered.logs?.length) {
     summary.logs = filtered.logs;
+  }
+  if (filterConfig.captureLists) {
+    summary.includedRecords = filtered.includedRecords || [];
+    summary.excludedRecords = filtered.excludedRecords || [];
   }
 
   return summary;
@@ -674,10 +686,12 @@ function extractScalarValue(value) {
   return value ?? "";
 }
 
-function filterWaybillRecords(records, config, targetRange) {
+function filterWaybillRecords(records, config, targetRange, options = {}) {
   const debug = Boolean(config.debugLogs);
   const logBuffer = debug ? [] : null;
+  const captureLists = Boolean(options.captureLists);
   const included = [];
+  const excludedRecords = captureLists ? [] : null;
   let excludedCount = 0;
 
   const { correctedParentIds, childByParentId } = buildCorrectionIndex(records);
@@ -692,6 +706,13 @@ function filterWaybillRecords(records, config, targetRange) {
     if (reason) {
       excludedCount += 1;
       emitFilterLog(logBuffer, reason);
+      if (captureLists && excludedRecords) {
+        excludedRecords.push({
+          record,
+          exclusionReason: reason,
+          id: resolveWaybillId(record) || "unknown",
+        });
+      }
       continue;
     }
     included.push(record);
@@ -713,6 +734,8 @@ function filterWaybillRecords(records, config, targetRange) {
     included: included.length,
     excluded: excludedCount,
     logs: logBuffer || undefined,
+    includedRecords: captureLists ? included : undefined,
+    excludedRecords: captureLists ? excludedRecords || [] : undefined,
   };
 }
 
@@ -952,6 +975,18 @@ function emitDebugLog(entry, buffer, debug) {
   }
 }
 
+function buildMonthKeyFromQuery(year, month) {
+  const y = Number(year);
+  const m = Number(month);
+  if (!Number.isInteger(y) || !Number.isInteger(m)) {
+    return undefined;
+  }
+  if (m < 1 || m > 12) {
+    return undefined;
+  }
+  return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}`;
+}
+
 function emitFilterLog(buffer, message) {
   if (!buffer) {
     return;
@@ -1007,7 +1042,12 @@ function normalizeTin(value) {
 async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
   const windowDays = options.windowDays ?? 3;
   const targetRange = options.targetRange || range;
-  const filterConfig = options.filterConfig || BASE_WAYBILL_FILTER_CONFIG;
+  const baseFilterConfig = options.filterConfig || BASE_WAYBILL_FILTER_CONFIG;
+  const captureLists = Boolean(options.captureLists);
+  const filterConfig =
+    captureLists && !baseFilterConfig.captureLists
+      ? { ...baseFilterConfig, captureLists: true }
+      : baseFilterConfig;
   const segments = chunkDateRange(range, windowDays);
   if (!segments.length) {
     const emptySummary = {
@@ -1028,6 +1068,8 @@ async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
   let combinedIncluded = 0;
   let combinedExcluded = 0;
   let combinedProcessed = 0;
+  const combinedIncludedRecords = captureLists ? [] : null;
+  const combinedExcludedRecords = captureLists ? [] : null;
 
   for (const segment of segments) {
     try {
@@ -1038,6 +1080,12 @@ async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
         targetRange,
         filterConfig
       );
+      if (captureLists && summary.includedRecords?.length) {
+        combinedIncludedRecords.push(...summary.includedRecords);
+      }
+      if (captureLists && summary.excludedRecords?.length) {
+        combinedExcludedRecords.push(...summary.excludedRecords);
+      }
       combinedTotal += Number(summary.total) || 0;
       combinedIncluded += Number(summary.included) || 0;
       combinedExcluded += Number(summary.excluded) || 0;
@@ -1062,7 +1110,14 @@ async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
           windowDays: nextWindow,
           targetRange,
           filterConfig,
+          captureLists,
         });
+        if (captureLists && nested.includedRecords?.length) {
+          combinedIncludedRecords.push(...nested.includedRecords);
+        }
+        if (captureLists && nested.excludedRecords?.length) {
+          combinedExcludedRecords.push(...nested.excludedRecords);
+        }
         combinedTotal += Number(nested.total) || 0;
         combinedIncluded += Number(nested.included) || 0;
         combinedExcluded += Number(nested.excluded) || 0;
@@ -1085,6 +1140,10 @@ async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
   };
   if (debugLogs?.length) {
     finalSummary.logs = debugLogs;
+  }
+  if (captureLists) {
+    finalSummary.includedRecords = combinedIncludedRecords || [];
+    finalSummary.excludedRecords = combinedExcludedRecords || [];
   }
   logWaybillSummary(finalSummary);
   return finalSummary;
@@ -1263,6 +1322,82 @@ app.get("/debug/users", async (_req, res) => {
   } catch (err) {
     console.error("[/debug/users] Failed to list users:", err);
     return res.status(500).json({ success: false, message: "Database error" });
+  }
+});
+
+app.get("/debug/waybills", async (req, res) => {
+  if (!ensureDatabase(res)) return;
+  const token = extractToken(req);
+  if (!token) {
+    return res.status(400).json({ success: false, message: "Missing token" });
+  }
+
+  const monthKey = buildMonthKeyFromQuery(req.query?.year, req.query?.month);
+  const debugMode = parseBoolean(req.query?.debug);
+  const filterConfig = debugMode
+    ? buildWaybillFilterConfig({ debugLogs: true })
+    : BASE_WAYBILL_FILTER_CONFIG;
+
+  let user;
+  try {
+    const decoded = decodeToken(token);
+    user = await findActiveUser(decoded.su);
+
+    if (!user || !user.active) {
+      return res.status(401).json({ success: false, message: "User revoked or not found" });
+    }
+
+    const effectiveSp = selectEffectiveSp(user.sp, decoded.sp, decoded.su);
+    if (!effectiveSp) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Session expired; please login again" });
+    }
+
+    const result = await fetchWaybillTotal(
+      { su: user.su, sp: effectiveSp },
+      monthKey,
+      { filterConfig, captureLists: true }
+    );
+
+    return res.json({
+      success: true,
+      included: result.includedRecords || [],
+      excluded: result.excludedRecords || [],
+      logs: result.logs || [],
+    });
+  } catch (err) {
+    if (err?.soapStatus === -1072) {
+      console.warn(
+        `[SOAP] SU ${user?.su || "unknown"} returned STATUS -1072 (RS permissions or limits)`
+      );
+      return res.status(403).json({
+        success: false,
+        code: -1072,
+        message:
+          "RS.ge rejected this request (STATUS -1072). Please verify SU permissions or try again later.",
+      });
+    }
+    console.error("[/debug/waybills] Failed:", err?.message || err);
+    if (err?.isSoapError) {
+      return res.status(502).json({
+        success: false,
+        message: "RS.ge SOAP error",
+        details: err.message || "SOAP request failed",
+      });
+    }
+
+    const isJwtError =
+      err?.name === "JsonWebTokenError" ||
+      err?.name === "TokenExpiredError" ||
+      err?.name === "NotBeforeError";
+    if (isJwtError) {
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
+
+    return res
+      .status(500)
+      .json({ success: false, message: err?.message || "Failed to fetch waybills" });
   }
 });
 
