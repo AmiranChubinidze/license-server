@@ -81,7 +81,7 @@ const SOAP_DATASET_PARSER = new xml2js.Parser({
   attrNameProcessors: [stripPrefix],
   trim: true,
 });
-const WAYBILL_FILTER_CONFIG = createWaybillFilterConfig(process.env);
+const BASE_WAYBILL_FILTER_CONFIG = createWaybillFilterConfig(process.env);
 
 const REQUIRED_USER_COLUMNS = [
   {
@@ -289,12 +289,12 @@ function decodeToken(token, options = {}) {
 
 function normalizeAmount(raw) {
   if (typeof raw === "number") {
-    return Number.isFinite(raw) ? raw : 0;
+    return Number.isFinite(raw) ? raw : null;
   }
-  if (typeof raw !== "string") return 0;
+  if (typeof raw !== "string") return null;
   const cleaned = raw.replace(/\s+/g, "").replace(/,/g, ".").replace(/[^\d.-]/g, "");
   const value = Number.parseFloat(cleaned);
-  return Number.isFinite(value) ? value : 0;
+  return Number.isFinite(value) ? value : null;
 }
 
 function buildDateRange(monthKey) {
@@ -397,24 +397,34 @@ function shouldRetryWithSmallerWindow(err, windowDays) {
 
 const MAX_SOAP_WINDOW_DAYS = 3;
 
-async function fetchWaybillTotal(credentials, monthKey) {
+async function fetchWaybillTotal(credentials, monthKey, options = {}) {
+  const filterConfig = options.filterConfig || BASE_WAYBILL_FILTER_CONFIG;
   const range = buildDateRange(monthKey);
   const rangeDays = countDaysInclusive(range);
   if (rangeDays > MAX_SOAP_WINDOW_DAYS) {
     console.warn(
       `[SOAP] Range ${range.start}..${range.end} exceeds ${MAX_SOAP_WINDOW_DAYS} days; chunking immediately`
     );
-    return await fetchWaybillTotalInChunks(credentials, range, MAX_SOAP_WINDOW_DAYS, range);
+    return await fetchWaybillTotalInChunks(credentials, range, {
+      windowDays: MAX_SOAP_WINDOW_DAYS,
+      targetRange: range,
+      filterConfig,
+    });
   }
   try {
     const xml = await requestWaybillXml(credentials, range);
-    const summary = await summarizeWaybillTotalsFromXml(xml, credentials.su, range);
+    const summary = await summarizeWaybillTotalsFromXml(
+      xml,
+      credentials.su,
+      range,
+      filterConfig
+    );
     logWaybillSummary(summary);
     return summary;
   } catch (err) {
     if (err?.soapStatus === -1072) {
       try {
-        return await fetchWaybillTotalInChunks(credentials, range);
+        return await fetchWaybillTotalInChunks(credentials, range, { filterConfig, targetRange: range });
       } catch (chunkErr) {
         if (!chunkErr.isSoapError) {
           chunkErr.isSoapError = true;
@@ -501,7 +511,12 @@ function handleSoapStatus(statusCode, su) {
   }
 }
 
-async function summarizeWaybillTotalsFromXml(xml, su, targetRange) {
+async function summarizeWaybillTotalsFromXml(
+  xml,
+  su,
+  targetRange,
+  filterConfig = BASE_WAYBILL_FILTER_CONFIG
+) {
   const statusCode = extractSoapStatus(xml);
   if (typeof statusCode === "number") {
     handleSoapStatus(statusCode, su);
@@ -520,7 +535,7 @@ async function summarizeWaybillTotalsFromXml(xml, su, targetRange) {
     };
   }
 
-  const filtered = filterWaybillRecords(records, WAYBILL_FILTER_CONFIG, targetRange);
+  const filtered = filterWaybillRecords(records, filterConfig, targetRange);
   const summary = {
     total: Number(filtered.total.toFixed(2)),
     included: filtered.included,
@@ -660,7 +675,8 @@ function extractScalarValue(value) {
 }
 
 function filterWaybillRecords(records, config, targetRange) {
-  const logBuffer = config.debugLogs ? [] : null;
+  const debug = Boolean(config.debugLogs);
+  const logBuffer = debug ? [] : null;
   const included = [];
   let excludedCount = 0;
 
@@ -671,6 +687,7 @@ function filterWaybillRecords(records, config, targetRange) {
       correctedParentIds,
       childByParentId,
       targetRange,
+      logBuffer,
     });
     if (reason) {
       excludedCount += 1;
@@ -680,7 +697,16 @@ function filterWaybillRecords(records, config, targetRange) {
     included.push(record);
   }
 
-  const total = included.reduce((acc, record) => acc + extractAmountFromRecord(record), 0);
+  const total = included.reduce(
+    (acc, record) =>
+      acc +
+      extractAmountFromRecord(record, {
+        debug,
+        logBuffer,
+        id: resolveWaybillId(record) || "unknown",
+      }),
+    0
+  );
 
   return {
     total,
@@ -690,7 +716,11 @@ function filterWaybillRecords(records, config, targetRange) {
   };
 }
 
-function extractAmountFromRecord(record) {
+function extractAmountFromRecord(record, options = {}) {
+  const debug = Boolean(options.debug);
+  const logBuffer = options.logBuffer || null;
+  const id = options.id || resolveWaybillId(record) || "unknown";
+
   for (const key of WAYBILL_AMOUNT_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(record, key)) {
       continue;
@@ -698,9 +728,11 @@ function extractAmountFromRecord(record) {
     const rawValue = Array.isArray(record[key]) ? record[key][0] : record[key];
     const amount = normalizeAmount(rawValue);
     if (Number.isFinite(amount)) {
+      emitDebugLog(`[AMOUNT] id=${id} value=${amount}`, logBuffer, debug);
       return amount;
     }
   }
+  emitDebugLog(`[AMOUNT] id=${id} value=0`, logBuffer, debug);
   return 0;
 }
 
@@ -747,6 +779,8 @@ function getFirstValue(record, keys) {
 
 function determineExclusionReason(record, config, correctionContext = {}) {
   const id = resolveWaybillId(record) || "unknown";
+  const debug = Boolean(config.debugLogs);
+  const logBuffer = correctionContext.logBuffer || null;
   const status = String(record.STATUS ?? "").trim();
   const normalizedStatus = status ? String(Number(status) || status).trim() : "";
   if (normalizedStatus && !WAYBILL_ALLOWED_STATUSES.has(normalizedStatus)) {
@@ -792,11 +826,21 @@ function determineExclusionReason(record, config, correctionContext = {}) {
 
   if (correctionContext?.targetRange) {
     const { start, end } = correctionContext.targetRange;
-    const effectiveDate = getEffectiveDate(record, { debug: config.debugLogs });
+    const effectiveDate = getEffectiveDate(record, { debug, logBuffer, id });
     if (!effectiveDate) {
+      emitDebugLog(
+        `[DATE_FILTER_OUT] id=${id} effective=null reason="missing effective date"`,
+        logBuffer,
+        debug
+      );
       return `Excluded waybill ID=${id} missing effective date for range ${start}..${end}`;
     }
     if (effectiveDate < start || effectiveDate > end) {
+      emitDebugLog(
+        `[DATE_FILTER_OUT] id=${id} effective=${effectiveDate} reason="outside target range"`,
+        logBuffer,
+        debug
+      );
       return `Excluded waybill ID=${id} effective_date=${effectiveDate} outside ${start}..${end}`;
     }
   }
@@ -804,31 +848,70 @@ function determineExclusionReason(record, config, correctionContext = {}) {
   return null;
 }
 
-// RS.ge returns rows by last_update_date, but financial month totals must be based on the
-// original business dates. We derive a single “effective date” per waybill by checking
-// BEGIN_DATE → ACTIVATE_DATE (in that order) and normalizing it to YYYY-MM-DD.
+// RS.ge returns rows by last_update_date, but financial month totals must be based on ACTIVATE_DATE
+// with BEGIN_DATE then CREATE_DATE as fallbacks. Dates are normalized to YYYY-MM-DD, and an invalid
+// ACTIVATE_DATE blocks other fallbacks.
 function getEffectiveDate(waybill, options = {}) {
   const debug = Boolean(options?.debug);
-  const candidates = ["BEGIN_DATE", "ACTIVATE_DATE"];
-  for (const key of candidates) {
+  const logBuffer = options?.logBuffer || null;
+  const id = options?.id || resolveWaybillId(waybill) || "unknown";
+
+  const logPick = (source, value) =>
+    emitDebugLog(`[DATE_PICK] id=${id} source=${source} value=${value}`, logBuffer, debug);
+
+  const readField = (key) => {
     if (!Object.prototype.hasOwnProperty.call(waybill, key)) {
-      continue;
+      return undefined;
     }
-    const raw = Array.isArray(waybill[key]) ? waybill[key][0] : waybill[key];
-    const normalized = normalizeWaybillDate(raw);
+    const raw = waybill[key];
+    return Array.isArray(raw) ? raw[0] : raw;
+  };
+
+  if (Object.prototype.hasOwnProperty.call(waybill, "ACTIVATE_DATE")) {
+    const normalized = normalizeWaybillDate(readField("ACTIVATE_DATE"));
     if (normalized) {
-      if (debug) {
-        console.debug(
-          `[WAYBILL_FILTER] Effective date source=${key} value=${normalized}`
-        );
-      }
+      logPick("ACTIVATE_DATE", normalized);
       return normalized;
     }
+    logPick("ACTIVATE_DATE", "invalid");
+    return null;
   }
-  if (debug) {
-    console.debug("[WAYBILL_FILTER] No effective date found (BEGIN_DATE/ACTIVATE_DATE)");
+
+  const beginDate = normalizeWaybillDate(readField("BEGIN_DATE"));
+  if (beginDate) {
+    logPick("BEGIN_DATE", beginDate);
+    return beginDate;
   }
+
+  const createDate = normalizeWaybillDate(readField("CREATE_DATE"));
+  if (createDate) {
+    logPick("CREATE_DATE", createDate);
+    return createDate;
+  }
+
+  logPick("NONE", "missing");
   return null;
+}
+
+function isValidDateParts(year, month, day) {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return false;
+  }
+  const candidate = new Date(Date.UTC(year, month - 1, day));
+  return (
+    !Number.isNaN(candidate.getTime()) &&
+    candidate.getUTCFullYear() === year &&
+    candidate.getUTCMonth() === month - 1 &&
+    candidate.getUTCDate() === day
+  );
 }
 
 function normalizeWaybillDate(raw) {
@@ -841,13 +924,32 @@ function normalizeWaybillDate(raw) {
   }
   const match = value.match(/(\d{4})[-/.](\d{2})[-/.](\d{2})/);
   if (match) {
-    return `${match[1]}-${match[2]}-${match[3]}`;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (isValidDateParts(year, month, day)) {
+      return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(
+        day
+      ).padStart(2, "0")}`;
+    }
+    return null;
   }
   const parsed = new Date(value.replace(" ", "T"));
   if (Number.isNaN(parsed.getTime())) {
     return null;
   }
-  return formatIsoDateUTC(parsed);
+  const iso = formatIsoDateUTC(parsed);
+  const [year, month, day] = iso.split("-").map(Number);
+  return isValidDateParts(year, month, day) ? iso : null;
+}
+
+function emitDebugLog(entry, buffer, debug) {
+  if (buffer) {
+    buffer.push(entry);
+  }
+  if (debug) {
+    console.debug(entry);
+  }
 }
 
 function emitFilterLog(buffer, message) {
@@ -877,6 +979,13 @@ function createWaybillFilterConfig(env = {}) {
   return { myTin, mySellerUnId, debugLogs };
 }
 
+function buildWaybillFilterConfig(overrides = {}) {
+  if (!overrides || typeof overrides !== "object" || !Object.keys(overrides).length) {
+    return BASE_WAYBILL_FILTER_CONFIG;
+  }
+  return { ...BASE_WAYBILL_FILTER_CONFIG, ...overrides };
+}
+
 function parseBoolean(value) {
   if (typeof value === "boolean") return value;
   if (typeof value === "number") {
@@ -895,7 +1004,10 @@ function normalizeTin(value) {
   return String(value).replace(/\s+/g, "");
 }
 
-async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3, targetRange = range) {
+async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
+  const windowDays = options.windowDays ?? 3;
+  const targetRange = options.targetRange || range;
+  const filterConfig = options.filterConfig || BASE_WAYBILL_FILTER_CONFIG;
   const segments = chunkDateRange(range, windowDays);
   if (!segments.length) {
     const emptySummary = {
@@ -911,7 +1023,7 @@ async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3, tar
   console.warn(
     `[SOAP] Range too wide for ${credentials.su}; retrying in ${segments.length} chunk(s) of ${windowDays} day(s)`
   );
-  const debugLogs = WAYBILL_FILTER_CONFIG.debugLogs ? [] : null;
+  const debugLogs = filterConfig.debugLogs ? [] : null;
   let combinedTotal = 0;
   let combinedIncluded = 0;
   let combinedExcluded = 0;
@@ -920,7 +1032,12 @@ async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3, tar
   for (const segment of segments) {
     try {
       const xml = await requestWaybillXml(credentials, segment);
-      const summary = await summarizeWaybillTotalsFromXml(xml, credentials.su, targetRange);
+      const summary = await summarizeWaybillTotalsFromXml(
+        xml,
+        credentials.su,
+        targetRange,
+        filterConfig
+      );
       combinedTotal += Number(summary.total) || 0;
       combinedIncluded += Number(summary.included) || 0;
       combinedExcluded += Number(summary.excluded) || 0;
@@ -941,12 +1058,11 @@ async function fetchWaybillTotalInChunks(credentials, range, windowDays = 3, tar
         console.warn(
           `[SOAP] Segment ${segment.start}..${segment.end} still too wide; retrying with ${nextWindow}-day window`
         );
-        const nested = await fetchWaybillTotalInChunks(
-          credentials,
-          segment,
-          nextWindow,
-          targetRange
-        );
+        const nested = await fetchWaybillTotalInChunks(credentials, segment, {
+          windowDays: nextWindow,
+          targetRange,
+          filterConfig,
+        });
         combinedTotal += Number(nested.total) || 0;
         combinedIncluded += Number(nested.included) || 0;
         combinedExcluded += Number(nested.excluded) || 0;
@@ -1247,6 +1363,10 @@ app.post("/waybill/total", async (req, res) => {
   if (!ensureDatabase(res)) return;
   const token = extractToken(req);
   const month = req.body?.month;
+  const debugMode = parseBoolean(req.query?.debug);
+  const filterConfig = debugMode
+    ? buildWaybillFilterConfig({ debugLogs: true })
+    : BASE_WAYBILL_FILTER_CONFIG;
   if (!token) {
     return res.status(400).json({ success: false, message: "Missing token" });
   }
@@ -1265,7 +1385,11 @@ app.post("/waybill/total", async (req, res) => {
       return res.status(401).json({ success: false, message: "Session expired; please login again" });
     }
 
-    const result = await fetchWaybillTotal({ su: user.su, sp: effectiveSp }, month);
+    const result = await fetchWaybillTotal(
+      { su: user.su, sp: effectiveSp },
+      month,
+      { filterConfig }
+    );
     if (result && typeof result === "object") {
       const totalValue = Number.isFinite(result.total) ? Number(result.total) : 0;
       const payload = {
