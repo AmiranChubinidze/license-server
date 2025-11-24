@@ -16,6 +16,7 @@ const allowedOrigins = [
   "https://license-server-z3vf.onrender.com",
   "http://localhost:3000",
   "chrome-extension://hbbbkkjdjngfagckieciipdnbinbepon",
+  "chrome-extension://nknjpddihjgbpmanhocgeclijichkocm",
 ];
 const isExtensionOrigin = (origin) =>
   typeof origin === "string" && origin.startsWith("chrome-extension://");
