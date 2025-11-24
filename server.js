@@ -1,16 +1,12 @@
 const path = require("path");
-const fs = require("fs");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const xml2js = require("xml2js");
-const { db, run, get, all, DB_PATH } = require("./db");
-const dbExistsOnStartup = fs.existsSync(DB_PATH);
-console.log(`[DB] Path: ${DB_PATH} | exists: ${dbExistsOnStartup}`);
-
-require("dotenv").config({ path: path.join(__dirname, ".env") });
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 const allowedOrigins = [
@@ -42,6 +38,18 @@ app.use(bodyParser.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
 const ADMIN_KEY = process.env.ADMIN_KEY || "change_this_admin_key";
+const SUPABASE_URL = (process.env.SUPABASE_URL || "").trim();
+const SUPABASE_SERVICE_KEY =
+  (process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || "").trim();
+const supabase =
+  SUPABASE_URL && SUPABASE_SERVICE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      })
+    : null;
+if (!supabase) {
+  console.error("[SUPABASE] Missing SUPABASE_URL or SUPABASE_SERVICE_KEY");
+}
 const SOAP_DATE_KEYS = ["create_date", "last_update_date"];
 const SOAP_DATE_KEY_OVERRIDE = process.env.SOAP_DATE_KEY
   ? sanitizeSoapDateKey(process.env.SOAP_DATE_KEY)
@@ -89,81 +97,71 @@ const SOAP_DATASET_PARSER = new xml2js.Parser({
   attrNameProcessors: [stripPrefix],
   trim: true,
 });
-const BASE_WAYBILL_FILTER_CONFIG = createWaybillFilterConfig(process.env);
+const BASE_WAYBILL_FILTER_CONFIG = createWaybillFilterConfig({
+  debugLogs: process.env.DEBUG_FILTER_LOGS,
+  myTin: "",
+});
 
-const REQUIRED_USER_COLUMNS = [
-  {
-    name: "su",
-    ddl: "ALTER TABLE users ADD COLUMN su TEXT NOT NULL UNIQUE",
-    description: "TEXT NOT NULL UNIQUE",
-  },
-  {
-    name: "sp",
-    ddl: "ALTER TABLE users ADD COLUMN sp TEXT NOT NULL DEFAULT ''",
-    description: "TEXT NOT NULL DEFAULT ''",
-  },
-  {
-    name: "company_name",
-    ddl: "ALTER TABLE users ADD COLUMN company_name TEXT NOT NULL DEFAULT ''",
-    description: "TEXT NOT NULL DEFAULT ''",
-  },
-  {
-    name: "active",
-    ddl: "ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
-    description: "INTEGER NOT NULL DEFAULT 1",
-  },
-  {
-    name: "updated_at",
-    ddl: "ALTER TABLE users ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
-    description: "DATETIME DEFAULT CURRENT_TIMESTAMP",
-  },
-];
-
-async function logUsersTableSchema(tag) {
-  try {
-    const info = await all("PRAGMA table_info(users)");
-    if (Array.isArray(info)) {
-      console.log(`[DB] Users schema snapshot${tag ? ` (${tag})` : ""}:`);
-      console.table(info);
-    } else {
-      console.log("[DB] PRAGMA table_info(users) returned no rows");
-    }
-    return Array.isArray(info) ? info : [];
-  } catch (err) {
-    console.error("[DB] Failed to inspect users table:", err?.message || err);
-    return [];
-  }
+function parseTinFromSu(su) {
+  if (typeof su !== "string") return "";
+  const trimmed = su.trim();
+  if (!trimmed || !trimmed.includes(":")) return "";
+  const parts = trimmed.split(":");
+  const candidate = parts[parts.length - 1].trim();
+  if (!candidate || !/^\d+$/.test(candidate)) return "";
+  return candidate;
 }
 
-async function migrateUsersTableColumns() {
-  const info = await logUsersTableSchema("before migration");
-  const columnsPresent = new Set(info.map((col) => col.name));
-  const missingColumns = REQUIRED_USER_COLUMNS.filter(
-    (col) => !columnsPresent.has(col.name)
-  );
-
-  if (!missingColumns.length) {
-    console.log("[DB] Users table already has all required columns");
-    await logUsersTableSchema("verified");
-    return;
+async function fetchSupabaseUserBySu(su) {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, su, sp, company_name, tin, active, created_at, updated_at")
+    .eq("su", su)
+    .limit(1);
+  if (error) {
+    throw new Error(error.message || "Supabase query failed");
   }
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
 
-  for (const col of missingColumns) {
-    try {
-      await run(col.ddl);
-      console.log(
-        `[DB MIGRATION] Added missing column: ${col.name} (${col.description})`
-      );
-    } catch (err) {
-      console.error(
-        `[DB MIGRATION] Failed to add column ${col.name}:`,
-        err?.message || err
-      );
-      throw err;
-    }
+async function upsertSupabaseUser(payload) {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase
+    .from("users")
+    .upsert(payload, { onConflict: "su" })
+    .select()
+    .limit(1);
+  if (error) {
+    throw new Error(error.message || "Supabase upsert failed");
   }
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
 
-  await logUsersTableSchema("after migration");
+async function updateSupabaseUser(fields, su) {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase
+    .from("users")
+    .update(fields)
+    .eq("su", su)
+    .select()
+    .limit(1);
+  if (error) {
+    throw new Error(error.message || "Supabase update failed");
+  }
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function listSupabaseUsers() {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase
+    .from("users")
+    .select("su, active, tin")
+    .order("su", { ascending: true });
+  if (error) {
+    throw new Error(error.message || "Supabase query failed");
+  }
+  return Array.isArray(data) ? data : [];
 }
 
 async function autodetectSoapDateKey() {
@@ -173,10 +171,22 @@ async function autodetectSoapDateKey() {
     );
     return;
   }
+  if (!supabase) {
+    console.warn("[SOAP] Skipping date parameter autodetect; Supabase not configured");
+    return;
+  }
   try {
-    const user = await get(
-      "SELECT su, sp FROM users WHERE TRIM(IFNULL(sp, '')) <> '' LIMIT 1"
-    );
+    const { data, error } = await supabase
+      .from("users")
+      .select("su, sp")
+      .not("sp", "is", null)
+      .neq("sp", "")
+      .limit(1);
+    if (error) {
+      console.warn("[SOAP] Skipping date autodetect; Supabase error:", error.message);
+      return;
+    }
+    const user = Array.isArray(data) && data.length ? data[0] : null;
     if (!user) {
       console.warn("[SOAP] Skipping date parameter autodetect; no users with stored SP");
       return;
@@ -204,28 +214,13 @@ async function autodetectSoapDateKey() {
   }
 }
 
-async function initDb() {
-  if (!db) {
-    console.error("Database not initialized; skipping migrations.");
-    return;
-  }
-  await run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      su TEXT NOT NULL UNIQUE,
-      sp TEXT NOT NULL,
-      company_name TEXT NOT NULL,
-      active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await run(`CREATE INDEX IF NOT EXISTS users_su_idx ON users (su)`);
-  await migrateUsersTableColumns();
-  await autodetectSoapDateKey();
+function ensureSupabase(res) {
+  if (supabase) return true;
+  res
+    .status(500)
+    .json({ success: false, message: "Supabase not configured. Check SUPABASE_URL and SUPABASE_SERVICE_KEY." });
+  return false;
 }
-
-
 
 function requireAdmin(req, res, next) {
   const key = req.headers["x-admin-key"] || req.body?.adminKey;
@@ -240,6 +235,7 @@ function serializeUser(record) {
   return {
     name: record.company_name,
     su: record.su,
+    tin: record.tin || "",
   };
 }
 
@@ -256,16 +252,30 @@ function extractToken(req) {
 
 async function findActiveUser(su) {
   if (!su) return null;
-  return await get(
-    "SELECT su, sp, company_name, active FROM users WHERE su = ?",
-    [su]
-  );
+  const user = await fetchSupabaseUserBySu(su);
+  if (!user) return null;
+  if (user.active === false || user.active === 0) return null;
+  if (!user.tin) {
+    const parsedTin = parseTinFromSu(su);
+    if (parsedTin) {
+      try {
+        await updateSupabaseUser({ tin: parsedTin, updated_at: new Date().toISOString() }, su);
+        user.tin = parsedTin;
+      } catch (err) {
+        console.warn("[SUPABASE] Failed to backfill TIN for", su, err?.message || err);
+      }
+    }
+  }
+  user.tin = user.tin || "";
+  user.company_name = user.company_name || "";
+  return user;
 }
 
 function issueToken(user, options = {}) {
   const payload = {
     su: user.su,
     name: user.company_name,
+    tin: user.tin,
     type: options.type ?? "access",
   };
 
@@ -278,17 +288,15 @@ function issueToken(user, options = {}) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn });
 }
 
-const issueAccessToken = (user, { sp } = {}) =>
+const issueAccessToken = (user) =>
   issueToken(user, {
     type: "access",
     expiresIn: "24h",
-    extraClaims: sp ? { sp } : undefined,
   });
-const issueRefreshToken = (user, { sp } = {}) =>
+const issueRefreshToken = (user) =>
   issueToken(user, {
     type: "refresh",
     expiresIn: "30d",
-    extraClaims: sp ? { sp } : undefined,
   });
 
 function decodeToken(token, options = {}) {
@@ -1147,17 +1155,14 @@ function emitFilterLog(buffer, message) {
   console.log(entry);
 }
 
-function createWaybillFilterConfig(env = {}) {
-  const myTin = normalizeTin(env.MY_TIN || "");
-  const debugLogs = parseBoolean(env.DEBUG_FILTER_LOGS);
-
-  if (!myTin) {
-    console.warn("[WAYBILL_FILTER] MY_TIN not configured; seller-side filtering unavailable");
-  }
+function createWaybillFilterConfig(options = {}) {
+  const myTin = normalizeTin(options.myTin || "");
+  const debugLogs = parseBoolean(
+    options.DEBUG_FILTER_LOGS !== undefined ? options.DEBUG_FILTER_LOGS : options.debugLogs
+  );
   if (debugLogs) {
     console.log("[WAYBILL_FILTER] Debug logging enabled");
   }
-
   return { myTin, debugLogs };
 }
 
@@ -1296,22 +1301,6 @@ async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
   return finalSummary;
 }
 
-function ensureDatabase(res) {
-  if (!db) {
-    res.status(500).json({ success: false, error: "Database not initialized" });
-    return false;
-  }
-  return true;
-}
-
-function selectEffectiveSp(userSp, providedSp, su) {
-  const stored = (userSp || "").trim();
-  if (stored) return stored;
-  if (typeof providedSp === "string" && providedSp.trim()) return providedSp.trim();
-  console.warn(`[AUTH] Missing SP for ${su}`);
-  return null;
-}
-
 async function buildRefreshedSession(incomingToken) {
   const decoded = decodeToken(incomingToken);
   if (decoded.type && decoded.type !== "refresh") {
@@ -1327,20 +1316,20 @@ async function buildRefreshedSession(incomingToken) {
     throw error;
   }
 
-  const effectiveSp = selectEffectiveSp(user.sp, decoded.sp, decoded.su);
+  const effectiveSp = (user.sp || "").trim();
   if (!effectiveSp) {
     const error = new Error("Session expired; please login again");
     error.status = 401;
     throw error;
   }
 
-  const token = issueAccessToken(user, { sp: effectiveSp });
-  const refreshToken = issueRefreshToken(user, { sp: effectiveSp });
+  const token = issueAccessToken(user);
+  const refreshToken = issueRefreshToken(user);
   return { token, refreshToken, user: serializeUser(user) };
 }
 
 app.post("/auth", async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   const su = (req.body?.su || "").trim();
   const sp = typeof req.body?.sp === "string" ? req.body.sp : "";
 
@@ -1348,21 +1337,37 @@ app.post("/auth", async (req, res) => {
     return res.status(400).json({ valid: false, message: "Missing credentials" });
   }
 
-  try {
-    const user = await findActiveUser(su);
+  const tin = parseTinFromSu(su);
+  if (!tin) {
+    return res.status(400).json({ valid: false, message: "Invalid SU format (TIN missing)" });
+  }
 
-    if (!user || !user.active) {
-      return res
-        .status(401)
-        .json({ valid: false, message: "???????? ???????????? ?? ??????" });
+  try {
+    const existing = await fetchSupabaseUserBySu(su);
+    if (existing && existing.active === false) {
+      return res.status(403).json({ valid: false, message: "User is inactive" });
     }
 
-    const token = issueAccessToken(user, { sp });
+    const nowIso = new Date().toISOString();
+    await upsertSupabaseUser({
+      su,
+      sp,
+      tin,
+      company_name: existing?.company_name || "",
+      active: true,
+      updated_at: nowIso,
+    });
+
+    const user = (await fetchSupabaseUserBySu(su)) || { su, sp, tin, company_name: "" };
+    const token = issueAccessToken(user);
+    const refreshToken = issueRefreshToken(user);
     return res.json({
       valid: true,
       token,
+      refreshToken,
       label: user.company_name,
       expiresInHours: 24,
+      user: serializeUser(user),
     });
   } catch (err) {
     console.error("Auth error:", err);
@@ -1372,43 +1377,41 @@ app.post("/auth", async (req, res) => {
 app.get("/ping", (_req, res) => res.json({ ok: true }))
 console.log("Loaded routes: /login, /verify, /refresh, /waybill/total");
 app.post("/login", async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
 
   const body = req.body || {};
-
   const su = (body.su || "").trim();
   const sp = typeof body.sp === "string" ? body.sp : "";
   console.log("[/login] Login attempt for SU:", su);
 
-  if (!fs.existsSync(DB_PATH)) {
-    console.error(`[/login] Database file missing: ${DB_PATH}`);
-    return res.status(500).json({ success: false, error: "Database file missing" });
-  }
-
-  if (!su) {
+  if (!su || !sp) {
     return res.status(400).json({ success: false, message: "Missing credentials" });
   }
 
+  const tin = parseTinFromSu(su);
+  if (!tin) {
+    return res.status(400).json({ success: false, message: "Invalid SU format (TIN missing)" });
+  }
+
   try {
-    const user = await findActiveUser(su);
-
-    if (!user) {
-      return res
-        .status(401)
-        .json({ success: false, message: "???????? ???????????? ?? ??????" });
-    }
-
-    if (!user.active) {
+    const existing = await fetchSupabaseUserBySu(su);
+    if (existing && existing.active === false) {
       return res.status(403).json({ success: false, message: "User is inactive" });
     }
 
-    const effectiveSp = selectEffectiveSp(user.sp, sp, su);
-    if (!effectiveSp) {
-      return res.status(400).json({ success: false, message: "Missing credentials" });
-    }
+    const nowIso = new Date().toISOString();
+    const saved = await upsertSupabaseUser({
+      su,
+      sp,
+      tin,
+      company_name: existing?.company_name || "",
+      active: true,
+      updated_at: nowIso,
+    });
 
-    const token = issueAccessToken(user, { sp: effectiveSp });
-    const refreshToken = issueRefreshToken(user, { sp: effectiveSp });
+    const user = saved || (await fetchSupabaseUserBySu(su)) || { su, sp, tin, company_name: "" };
+    const token = issueAccessToken(user);
+    const refreshToken = issueRefreshToken(user);
     return res.json({
       success: true,
       token,
@@ -1422,7 +1425,7 @@ app.post("/login", async (req, res) => {
 });
 
 app.post("/loginHybrid", async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
 
   const su = (req.body?.su || "").trim();
   const sp = typeof req.body?.sp === "string" ? req.body.sp : "";
@@ -1432,17 +1435,32 @@ app.post("/loginHybrid", async (req, res) => {
     return res.status(400).json({ success: false, message: "Missing credentials" });
   }
 
-  try {
-    const user = await findActiveUser(su);
+  const tin = parseTinFromSu(su);
+  if (!tin) {
+    return res.status(400).json({ success: false, message: "Invalid SU format (TIN missing)" });
+  }
 
-    if (!user || !user.active) {
+  try {
+    const existing = await fetchSupabaseUserBySu(su);
+    if (existing && existing.active === false) {
       return res
         .status(401)
         .json({ success: false, message: "User not found or inactive" });
     }
 
-    const token = issueAccessToken(user, { sp });
-    const refreshToken = issueRefreshToken(user, { sp });
+    const nowIso = new Date().toISOString();
+    const saved = await upsertSupabaseUser({
+      su,
+      sp,
+      tin,
+      company_name: existing?.company_name || "",
+      active: true,
+      updated_at: nowIso,
+    });
+
+    const user = saved || (await fetchSupabaseUserBySu(su)) || { su, sp, tin, company_name: "" };
+    const token = issueAccessToken(user);
+    const refreshToken = issueRefreshToken(user);
     return res.json({
       success: true,
       token,
@@ -1456,16 +1474,17 @@ app.post("/loginHybrid", async (req, res) => {
 });
 
 app.get("/debug/users", async (_req, res) => {
-  if (!ensureDatabase(res)) return;
-
-  if (!fs.existsSync(DB_PATH)) {
-    console.error(`[/debug/users] Database file missing: ${DB_PATH}`);
-    return res.status(500).json({ success: false, error: "Database file missing" });
-  }
+  if (!ensureSupabase(res)) return;
 
   try {
-    const records = await all("SELECT su, active FROM users ORDER BY su ASC");
-    return res.json({ users: records.map((record) => ({ su: record.su, active: record.active })) });
+    const records = await listSupabaseUsers();
+    return res.json({
+      users: records.map((record) => ({
+        su: record.su,
+        active: record.active,
+        tin: record.tin,
+      })),
+    });
   } catch (err) {
     console.error("[/debug/users] Failed to list users:", err);
     return res.status(500).json({ success: false, message: "Database error" });
@@ -1473,7 +1492,7 @@ app.get("/debug/users", async (_req, res) => {
 });
 
 app.get("/debug/waybills", async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   const token = extractToken(req);
   if (!token) {
     return res.status(400).json({ success: false, message: "Missing token" });
@@ -1481,7 +1500,7 @@ app.get("/debug/waybills", async (req, res) => {
 
   const monthKey = buildMonthKeyFromQuery(req.query?.year, req.query?.month);
   const debugMode = parseBoolean(req.query?.debug);
-  const filterConfig = debugMode
+  let filterConfig = debugMode
     ? buildWaybillFilterConfig({ debugLogs: true })
     : BASE_WAYBILL_FILTER_CONFIG;
 
@@ -1494,12 +1513,15 @@ app.get("/debug/waybills", async (req, res) => {
       return res.status(401).json({ success: false, message: "User revoked or not found" });
     }
 
-    const effectiveSp = selectEffectiveSp(user.sp, decoded.sp, decoded.su);
+    const effectiveSp = (user.sp || "").trim();
     if (!effectiveSp) {
-      return res
-        .status(401)
-        .json({ success: false, message: "Session expired; please login again" });
+      return res.status(401).json({ success: false, message: "Missing SP for user" });
     }
+    const myTin = normalizeTin(user.tin);
+    if (!myTin) {
+      return res.status(400).json({ success: false, message: "TIN missing for user" });
+    }
+    filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
 
     const result = await fetchWaybillTotal(
       { su: user.su, sp: effectiveSp },
@@ -1549,14 +1571,14 @@ app.get("/debug/waybills", async (req, res) => {
 });
 
 app.get("/waybill/debugList", async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   const token = extractToken(req);
   if (!token) {
     return res.status(400).json({ success: false, message: "Missing token" });
   }
 
   const monthKey = buildMonthKeyFromQuery(req.query?.year, req.query?.month);
-  const filterConfig = buildWaybillFilterConfig({ debugLogs: true });
+  let filterConfig = buildWaybillFilterConfig({ debugLogs: true });
 
   let user;
   try {
@@ -1567,12 +1589,15 @@ app.get("/waybill/debugList", async (req, res) => {
       return res.status(401).json({ success: false, message: "User revoked or not found" });
     }
 
-    const effectiveSp = selectEffectiveSp(user.sp, decoded.sp, decoded.su);
+    const effectiveSp = (user.sp || "").trim();
     if (!effectiveSp) {
-      return res
-        .status(401)
-        .json({ success: false, message: "Session expired; please login again" });
+      return res.status(401).json({ success: false, message: "Missing SP for user" });
     }
+    const myTin = normalizeTin(user.tin);
+    if (!myTin) {
+      return res.status(400).json({ success: false, message: "TIN missing for user" });
+    }
+    filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
 
     const result = await fetchWaybillTotal(
       { su: user.su, sp: effectiveSp },
@@ -1622,7 +1647,7 @@ app.get("/waybill/debugList", async (req, res) => {
 });
 
 app.get("/verify", async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   const token = extractToken(req);
   if (!token) {
     return res.status(400).json({ valid: false, message: "Missing token" });
@@ -1643,7 +1668,7 @@ app.get("/verify", async (req, res) => {
 });
 
 app.post("/refresh", async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   const incoming = extractToken(req);
   if (!incoming) {
     return res.status(400).json({ success: false, message: "Missing token" });
@@ -1666,7 +1691,7 @@ app.post("/refresh", async (req, res) => {
 });
 
 app.post("/auth/refresh", async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   const token = req.body?.token;
   if (!token) {
     return res.status(400).json({ success: false, message: "Missing token" });
@@ -1690,7 +1715,7 @@ app.post("/auth/refresh", async (req, res) => {
 });
 
 app.post("/validateToken", async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   const token = req.body?.token;
   if (!token) {
     return res.json({ valid: false, message: "Missing token" });
@@ -1715,11 +1740,11 @@ app.post("/validateToken", async (req, res) => {
 });
 
 app.post("/waybill/total", async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   const token = extractToken(req);
   const month = req.body?.month;
   const debugMode = parseBoolean(req.query?.debug);
-  const filterConfig = debugMode
+  let filterConfig = debugMode
     ? buildWaybillFilterConfig({ debugLogs: true })
     : BASE_WAYBILL_FILTER_CONFIG;
   if (!token) {
@@ -1735,10 +1760,15 @@ app.post("/waybill/total", async (req, res) => {
       return res.status(401).json({ success: false, message: "User revoked or not found" });
     }
 
-    const effectiveSp = selectEffectiveSp(user.sp, decoded.sp, decoded.su);
+    const effectiveSp = (user.sp || "").trim();
     if (!effectiveSp) {
-      return res.status(401).json({ success: false, message: "Session expired; please login again" });
+      return res.status(401).json({ success: false, message: "Missing SP for user" });
     }
+    const myTin = normalizeTin(user.tin);
+    if (!myTin) {
+      return res.status(400).json({ success: false, message: "TIN missing for user" });
+    }
+    filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
 
     const result = await fetchWaybillTotal(
       { su: user.su, sp: effectiveSp },
@@ -1803,12 +1833,16 @@ app.post("/waybill/total", async (req, res) => {
 });
 
 app.get("/admin/users", requireAdmin, async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   try {
-    const users = await all(
-      "SELECT id, su, company_name, active, created_at, updated_at FROM users ORDER BY company_name ASC"
-    );
-    return res.json({ success: true, users });
+    const { data, error } = await supabase
+      .from("users")
+      .select("id, su, company_name, tin, active, created_at, updated_at")
+      .order("company_name", { ascending: true });
+    if (error) {
+      throw new Error(error.message || "Supabase error");
+    }
+    return res.json({ success: true, users: data || [] });
   } catch (err) {
     console.error("List users failed:", err);
     return res.status(500).json({ success: false, message: "Database error" });
@@ -1816,7 +1850,7 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
 });
 
 app.post("/admin/addUser", requireAdmin, async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   const su = (req.body?.su || "").trim();
   const companyName = (req.body?.company_name || "").trim();
 
@@ -1824,19 +1858,21 @@ app.post("/admin/addUser", requireAdmin, async (req, res) => {
     return res.status(400).json({ success: false, message: "Missing fields" });
   }
 
-  try {
-    const placeholderSp = "";
-    await run(
-      `INSERT INTO users (su, sp, company_name, active)
-       VALUES (?, ?, ?, 1)
-       ON CONFLICT(su) DO UPDATE SET
-         sp = excluded.sp,
-         company_name = excluded.company_name,
-         active = 1,
-         updated_at = CURRENT_TIMESTAMP`,
-      [su, placeholderSp, companyName]
-    );
+  const tin = parseTinFromSu(su);
+  if (!tin) {
+    return res.status(400).json({ success: false, message: "Invalid SU format (TIN missing)" });
+  }
 
+  try {
+    const nowIso = new Date().toISOString();
+    await upsertSupabaseUser({
+      su,
+      company_name: companyName,
+      sp: "",
+      tin,
+      active: true,
+      updated_at: nowIso,
+    });
     return res.json({ success: true });
   } catch (err) {
     console.error("Add user failed:", err);
@@ -1845,22 +1881,23 @@ app.post("/admin/addUser", requireAdmin, async (req, res) => {
 });
 
 app.post("/admin/revokeUser", requireAdmin, async (req, res) => {
-  if (!ensureDatabase(res)) return;
+  if (!ensureSupabase(res)) return;
   const su = (req.body?.su || "").trim();
   if (!su) {
     return res.status(400).json({ success: false, message: "Missing SU" });
   }
 
   try {
-    const result = await run(
-      `UPDATE users
-       SET active = 0,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE su = ?`,
-      [su]
-    );
-
-    if (!result.changes) {
+    const { data, error } = await supabase
+      .from("users")
+      .update({ active: false, updated_at: new Date().toISOString() })
+      .eq("su", su)
+      .select("su")
+      .limit(1);
+    if (error) {
+      throw new Error(error.message || "Supabase error");
+    }
+    if (!data || !data.length) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
@@ -1889,7 +1926,11 @@ app.use((err, _req, res, _next) => {
 
 const PORT = process.env.PORT || 3000;
 
-initDb()
+async function initializeRuntime() {
+  await autodetectSoapDateKey();
+}
+
+initializeRuntime()
   .then(() => {
     if (String(process.env.STUB_SOAP || "").toLowerCase() === "true") {
       const a = Number(process.env.STUB_SOAP_AMOUNT || 12345.67);
@@ -1902,6 +1943,6 @@ initDb()
     server.headersTimeout = 125000;
   })
   .catch((err) => {
-    console.error("DB initialization failed:", err);
+    console.error("Initialization failed:", err);
   });
 
