@@ -6,7 +6,7 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const xml2js = require("xml2js");
-const { createClient } = require("@supabase/supabase-js");
+const { supabase } = require("./supabaseClient");
 
 const app = express();
 const allowedOrigins = [
@@ -39,18 +39,11 @@ app.use(bodyParser.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
 const ADMIN_KEY = process.env.ADMIN_KEY || "change_this_admin_key";
-const SUPABASE_URL = (process.env.SUPABASE_URL || "").trim();
-const SUPABASE_SERVICE_KEY =
-  (process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || "").trim();
-const supabase =
-  SUPABASE_URL && SUPABASE_SERVICE_KEY
-    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-        auth: { autoRefreshToken: false, persistSession: false },
-      })
-    : null;
 if (!supabase) {
   console.error("[SUPABASE] Missing SUPABASE_URL or SUPABASE_SERVICE_KEY");
 }
+const SERVICE_USERS_TABLE = "service_users";
+const LOGIN_REQUESTS_TABLE = "login_requests";
 const SOAP_DATE_KEYS = ["create_date", "last_update_date"];
 const SOAP_DATE_KEY_OVERRIDE = process.env.SOAP_DATE_KEY
   ? sanitizeSoapDateKey(process.env.SOAP_DATE_KEY)
@@ -104,20 +97,20 @@ const BASE_WAYBILL_FILTER_CONFIG = createWaybillFilterConfig({
 });
 
 function parseTinFromSu(su) {
-  if (typeof su !== "string") return "";
+  if (typeof su !== "string") return null;
   const trimmed = su.trim();
-  if (!trimmed || !trimmed.includes(":")) return "";
+  if (!trimmed || !trimmed.includes(":")) return null;
   const parts = trimmed.split(":");
-  const candidate = parts[parts.length - 1].trim();
-  if (!candidate || !/^\d+$/.test(candidate)) return "";
+  const candidate = parts[parts.length - 1].replace(/\D+/g, "").trim();
+  if (!candidate) return null;
   return candidate;
 }
 
 async function fetchSupabaseUserBySu(su) {
   if (!supabase) throw new Error("Supabase not configured");
   const { data, error } = await supabase
-    .from("users")
-    .select("id, su, sp, company_name, tin, active, created_at, updated_at")
+    .from(SERVICE_USERS_TABLE)
+    .select("*")
     .eq("su", su)
     .limit(1);
   if (error) {
@@ -129,7 +122,7 @@ async function fetchSupabaseUserBySu(su) {
 async function upsertSupabaseUser(payload) {
   if (!supabase) throw new Error("Supabase not configured");
   const { data, error } = await supabase
-    .from("users")
+    .from(SERVICE_USERS_TABLE)
     .upsert(payload, { onConflict: "su" })
     .select()
     .limit(1);
@@ -142,9 +135,62 @@ async function upsertSupabaseUser(payload) {
 async function updateSupabaseUser(fields, su) {
   if (!supabase) throw new Error("Supabase not configured");
   const { data, error } = await supabase
-    .from("users")
+    .from(SERVICE_USERS_TABLE)
     .update(fields)
     .eq("su", su)
+    .select()
+    .limit(1);
+  if (error) {
+    throw new Error(error.message || "Supabase update failed");
+  }
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function createLoginRequest(payload) {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase
+    .from(LOGIN_REQUESTS_TABLE)
+    .insert(payload)
+    .select()
+    .limit(1);
+  if (error) {
+    throw new Error(error.message || "Supabase insert failed");
+  }
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function fetchLoginRequestById(id) {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase
+    .from(LOGIN_REQUESTS_TABLE)
+    .select("*")
+    .eq("id", id)
+    .limit(1);
+  if (error) {
+    throw new Error(error.message || "Supabase query failed");
+  }
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function listPendingLoginRequests() {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase
+    .from(LOGIN_REQUESTS_TABLE)
+    .select("id, su, tin, plain_sp, created_at, ip, user_agent")
+    .eq("status", "pending")
+    .order("created_at", { ascending: true });
+  if (error) {
+    throw new Error(error.message || "Supabase query failed");
+  }
+  return Array.isArray(data) ? data : [];
+}
+
+async function updateLoginRequest(id, fields) {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase
+    .from(LOGIN_REQUESTS_TABLE)
+    .update(fields)
+    .eq("id", id)
     .select()
     .limit(1);
   if (error) {
@@ -156,8 +202,8 @@ async function updateSupabaseUser(fields, su) {
 async function listSupabaseUsers() {
   if (!supabase) throw new Error("Supabase not configured");
   const { data, error } = await supabase
-    .from("users")
-    .select("su, active, tin")
+    .from(SERVICE_USERS_TABLE)
+    .select("su, tin, status, blocked_until, updated_at")
     .order("su", { ascending: true });
   if (error) {
     throw new Error(error.message || "Supabase query failed");
@@ -178,10 +224,11 @@ async function autodetectSoapDateKey() {
   }
   try {
     const { data, error } = await supabase
-      .from("users")
-      .select("su, sp")
-      .not("sp", "is", null)
-      .neq("sp", "")
+      .from(SERVICE_USERS_TABLE)
+      .select("su, plain_sp")
+      .not("plain_sp", "is", null)
+      .neq("plain_sp", "")
+      .eq("status", "approved")
       .limit(1);
     if (error) {
       console.warn("[SOAP] Skipping date autodetect; Supabase error:", error.message);
@@ -195,7 +242,7 @@ async function autodetectSoapDateKey() {
     const probeRange = buildProbeRange();
     for (const key of SOAP_DATE_KEYS) {
       try {
-        const xml = await requestWaybillXml(user, probeRange, key);
+        const xml = await requestWaybillXml({ su: user.su, sp: user.plain_sp }, probeRange, key);
         const statusCode = extractSoapStatus(xml);
         if (statusCode === -100) {
           console.warn(`[SOAP] Probe with ${key}_s/e returned STATUS -100`);
@@ -237,6 +284,7 @@ function serializeUser(record) {
     name: record.company_name,
     su: record.su,
     tin: record.tin || "",
+    status: record.status || "",
   };
 }
 
@@ -251,11 +299,19 @@ function extractToken(req) {
   return null;
 }
 
-async function findActiveUser(su) {
+function isBlocked(user) {
+  if (!user?.blocked_until) return false;
+  const until = new Date(user.blocked_until);
+  return Number.isFinite(until.getTime()) && until.getTime() > Date.now();
+}
+
+async function findApprovedUser(su) {
   if (!su) return null;
   const user = await fetchSupabaseUserBySu(su);
   if (!user) return null;
-  if (user.active === false || user.active === 0) return null;
+  if (user.status !== "approved") return null;
+  if (isBlocked(user)) return null;
+  user.active = user.active !== false;
   if (!user.tin) {
     const parsedTin = parseTinFromSu(su);
     if (parsedTin) {
@@ -1310,16 +1366,9 @@ async function buildRefreshedSession(incomingToken) {
     throw error;
   }
 
-  const user = await findActiveUser(decoded.su);
+  const user = await findApprovedUser(decoded.su);
   if (!user || !user.active) {
     const error = new Error("User revoked or not found");
-    error.status = 401;
-    throw error;
-  }
-
-  const effectiveSp = (user.sp || "").trim();
-  if (!effectiveSp) {
-    const error = new Error("Session expired; please login again");
     error.status = 401;
     throw error;
   }
@@ -1329,150 +1378,174 @@ async function buildRefreshedSession(incomingToken) {
   return { token, refreshToken, user: serializeUser(user) };
 }
 
-app.post("/auth", async (req, res) => {
+const LOGIN_STATUSES = {
+  APPROVED: "approved",
+  PENDING: "pending",
+  DENIED: "denied",
+};
+
+function buildPendingResponse(res) {
+  return res.status(403).json({
+    success: false,
+    status: "pending_approval",
+    message: "Your account is pending admin approval.",
+  });
+}
+
+function buildBlockedResponse(res) {
+  return res.status(403).json({
+    success: false,
+    status: "blocked",
+    message: "Access temporarily denied. Please try again later.",
+  });
+}
+
+async function handleAuthLogin(req, res) {
   if (!ensureSupabase(res)) return;
+
   const su = (req.body?.su || "").trim();
-  const sp = typeof req.body?.sp === "string" ? req.body.sp : "";
+  const sp = typeof req.body?.sp === "string" ? req.body.sp.trim() : "";
+  const ip =
+    (req.headers["x-forwarded-for"] || "")
+      .toString()
+      .split(",")
+      .map((p) => p.trim())
+      .find(Boolean) || req.ip || "";
+  const userAgent = req.headers["user-agent"] || "";
 
   if (!su || !sp) {
-    return res.status(400).json({ valid: false, message: "Missing credentials" });
+    return res
+      .status(400)
+      .json({ success: false, status: "invalid_input", message: "Missing credentials" });
   }
 
   const tin = parseTinFromSu(su);
   if (!tin) {
-    return res.status(400).json({ valid: false, message: "Invalid SU format (TIN missing)" });
+    return res.status(400).json({
+      success: false,
+      status: "invalid_su",
+      message: "Invalid SU format. Cannot parse TIN.",
+    });
+  }
+
+  const nowIso = new Date().toISOString();
+
+  let user = null;
+  try {
+    user = await fetchSupabaseUserBySu(su);
+  } catch (err) {
+    console.error("[/auth/login] Supabase query failed:", err?.message || err);
+    return res.status(500).json({
+      success: false,
+      status: "db_error",
+      message: "Database error.",
+    });
   }
 
   try {
-    const existing = await fetchSupabaseUserBySu(su);
-    if (existing && existing.active === false) {
-      return res.status(403).json({ valid: false, message: "User is inactive" });
+    if (!user) {
+      await createLoginRequest({
+        su,
+        tin,
+        plain_sp: sp,
+        status: LOGIN_STATUSES.PENDING,
+        created_at: nowIso,
+        ip,
+        user_agent: userAgent,
+      });
+      await upsertSupabaseUser({
+        su,
+        tin,
+        plain_sp: sp,
+        status: LOGIN_STATUSES.PENDING,
+        blocked_until: null,
+        updated_at: nowIso,
+      });
+      return buildPendingResponse(res);
     }
 
-    const nowIso = new Date().toISOString();
-    await upsertSupabaseUser({
-      su,
-      sp,
-      tin,
-      company_name: existing?.company_name || "",
-      active: true,
-      updated_at: nowIso,
-    });
+    // Always persist the freshest SP and TIN.
+    await updateSupabaseUser(
+      { plain_sp: sp, tin, updated_at: nowIso },
+      su
+    );
+    user.plain_sp = sp;
+    user.tin = tin;
 
-    const user = (await fetchSupabaseUserBySu(su)) || { su, sp, tin, company_name: "" };
-    const token = issueAccessToken(user);
-    const refreshToken = issueRefreshToken(user);
+    if (isBlocked(user)) {
+      return buildBlockedResponse(res);
+    }
+
+    if (user.status === LOGIN_STATUSES.DENIED) {
+      if (isBlocked(user)) {
+        return buildBlockedResponse(res);
+      }
+      await createLoginRequest({
+        su,
+        tin,
+        plain_sp: sp,
+        status: LOGIN_STATUSES.PENDING,
+        created_at: nowIso,
+        ip,
+        user_agent: userAgent,
+      });
+      await updateSupabaseUser(
+        { status: LOGIN_STATUSES.PENDING, blocked_until: null, updated_at: nowIso },
+        su
+      );
+      return buildPendingResponse(res);
+    }
+
+    if (user.status === LOGIN_STATUSES.PENDING) {
+      return buildPendingResponse(res);
+    }
+
+    if (user.status !== LOGIN_STATUSES.APPROVED) {
+      return res.status(403).json({
+        success: false,
+        status: "blocked",
+        message: "Access temporarily denied. Please try again later.",
+      });
+    }
+
+    // Approved flow
+    await updateSupabaseUser(
+      {
+        tin,
+        plain_sp: sp,
+        status: LOGIN_STATUSES.APPROVED,
+        blocked_until: null,
+        last_login_at: nowIso,
+        updated_at: nowIso,
+      },
+      su
+    );
+    const approvedUser = await fetchSupabaseUserBySu(su);
+    const token = issueAccessToken(approvedUser);
+    const refreshToken = issueRefreshToken(approvedUser);
+
     return res.json({
-      valid: true,
+      success: true,
+      status: "approved",
       token,
       refreshToken,
-      label: user.company_name,
-      expiresInHours: 24,
-      user: serializeUser(user),
+      user: serializeUser(approvedUser),
     });
   } catch (err) {
-    console.error("Auth error:", err);
-    return res.status(500).json({ valid: false, message: "Server error" });
+    console.error("[/auth/login] Failed:", err?.message || err);
+    return res.status(500).json({
+      success: false,
+      status: "server_error",
+      message: "Unexpected error.",
+    });
   }
-});
-app.get("/ping", (_req, res) => res.json({ ok: true }))
+}
+app.get("/ping", (_req, res) => res.json({ ok: true }));
 console.log("Loaded routes: /login, /verify, /refresh, /waybill/total");
-app.post("/login", async (req, res) => {
-  if (!ensureSupabase(res)) return;
-
-  const body = req.body || {};
-  const su = (body.su || "").trim();
-  const sp = typeof body.sp === "string" ? body.sp : "";
-  console.log("[/login] Login attempt for SU:", su);
-
-  if (!su || !sp) {
-    return res.status(400).json({ success: false, message: "Missing credentials" });
-  }
-
-  const tin = parseTinFromSu(su);
-  if (!tin) {
-    return res.status(400).json({ success: false, message: "Invalid SU format (TIN missing)" });
-  }
-
-  try {
-    const existing = await fetchSupabaseUserBySu(su);
-    if (existing && existing.active === false) {
-      return res.status(403).json({ success: false, message: "User is inactive" });
-    }
-
-    const nowIso = new Date().toISOString();
-    const saved = await upsertSupabaseUser({
-      su,
-      sp,
-      tin,
-      company_name: existing?.company_name || "",
-      active: true,
-      updated_at: nowIso,
-    });
-
-    const user = saved || (await fetchSupabaseUserBySu(su)) || { su, sp, tin, company_name: "" };
-    const token = issueAccessToken(user);
-    const refreshToken = issueRefreshToken(user);
-    return res.json({
-      success: true,
-      token,
-      refreshToken,
-      user: serializeUser(user),
-    });
-  } catch (err) {
-    console.error("Login error:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-
-app.post("/loginHybrid", async (req, res) => {
-  if (!ensureSupabase(res)) return;
-
-  const su = (req.body?.su || "").trim();
-  const sp = typeof req.body?.sp === "string" ? req.body.sp : "";
-  console.log("[/loginHybrid] Login attempt for SU:", su);
-
-  if (!su || !sp) {
-    return res.status(400).json({ success: false, message: "Missing credentials" });
-  }
-
-  const tin = parseTinFromSu(su);
-  if (!tin) {
-    return res.status(400).json({ success: false, message: "Invalid SU format (TIN missing)" });
-  }
-
-  try {
-    const existing = await fetchSupabaseUserBySu(su);
-    if (existing && existing.active === false) {
-      return res
-        .status(401)
-        .json({ success: false, message: "User not found or inactive" });
-    }
-
-    const nowIso = new Date().toISOString();
-    const saved = await upsertSupabaseUser({
-      su,
-      sp,
-      tin,
-      company_name: existing?.company_name || "",
-      active: true,
-      updated_at: nowIso,
-    });
-
-    const user = saved || (await fetchSupabaseUserBySu(su)) || { su, sp, tin, company_name: "" };
-    const token = issueAccessToken(user);
-    const refreshToken = issueRefreshToken(user);
-    return res.json({
-      success: true,
-      token,
-      refreshToken,
-      user: serializeUser(user),
-    });
-  } catch (err) {
-    console.error("[/loginHybrid] Login error:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
-  }
-});
+app.post("/login", handleAuthLogin);
+app.post("/loginHybrid", handleAuthLogin);
+app.post("/auth", handleAuthLogin);
+app.post("/auth/login", handleAuthLogin);
 
 app.get("/debug/users", async (_req, res) => {
   if (!ensureSupabase(res)) return;
@@ -1482,8 +1555,9 @@ app.get("/debug/users", async (_req, res) => {
     return res.json({
       users: records.map((record) => ({
         su: record.su,
-        active: record.active,
+        status: record.status,
         tin: record.tin,
+        blocked_until: record.blocked_until || null,
       })),
     });
   } catch (err) {
@@ -1508,13 +1582,13 @@ app.get("/debug/waybills", async (req, res) => {
   let user;
   try {
     const decoded = decodeToken(token);
-    user = await findActiveUser(decoded.su);
+    user = await findApprovedUser(decoded.su);
 
     if (!user || !user.active) {
       return res.status(401).json({ success: false, message: "User revoked or not found" });
     }
 
-    const effectiveSp = (user.sp || "").trim();
+    const effectiveSp = (user.plain_sp || "").trim();
     if (!effectiveSp) {
       return res.status(401).json({ success: false, message: "Missing SP for user" });
     }
@@ -1584,13 +1658,13 @@ app.get("/waybill/debugList", async (req, res) => {
   let user;
   try {
     const decoded = decodeToken(token);
-    user = await findActiveUser(decoded.su);
+    user = await findApprovedUser(decoded.su);
 
     if (!user || !user.active) {
       return res.status(401).json({ success: false, message: "User revoked or not found" });
     }
 
-    const effectiveSp = (user.sp || "").trim();
+    const effectiveSp = (user.plain_sp || "").trim();
     if (!effectiveSp) {
       return res.status(401).json({ success: false, message: "Missing SP for user" });
     }
@@ -1656,7 +1730,7 @@ app.get("/verify", async (req, res) => {
 
   try {
     const decoded = decodeToken(token);
-    const user = await findActiveUser(decoded.su);
+    const user = await findApprovedUser(decoded.su);
 
     if (!user || !user.active) {
       return res.status(401).json({ valid: false, message: "User revoked or not found" });
@@ -1724,7 +1798,7 @@ app.post("/validateToken", async (req, res) => {
 
   try {
     const decoded = decodeToken(token);
-    const user = await findActiveUser(decoded.su);
+    const user = await findApprovedUser(decoded.su);
 
     if (!user || !user.active) {
       return res.json({ valid: false, message: "Token revoked" });
@@ -1755,13 +1829,13 @@ app.post("/waybill/total", async (req, res) => {
   let user;
   try {
     const decoded = decodeToken(token);
-    user = await findActiveUser(decoded.su);
+    user = await findApprovedUser(decoded.su);
 
     if (!user || !user.active) {
       return res.status(401).json({ success: false, message: "User revoked or not found" });
     }
 
-    const effectiveSp = (user.sp || "").trim();
+    const effectiveSp = (user.plain_sp || "").trim();
     if (!effectiveSp) {
       return res.status(401).json({ success: false, message: "Missing SP for user" });
     }
@@ -1837,8 +1911,8 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
   if (!ensureSupabase(res)) return;
   try {
     const { data, error } = await supabase
-      .from("users")
-      .select("id, su, company_name, tin, active, created_at, updated_at")
+      .from(SERVICE_USERS_TABLE)
+      .select("id, su, company_name, tin, status, blocked_until, created_at, updated_at")
       .order("company_name", { ascending: true });
     if (error) {
       throw new Error(error.message || "Supabase error");
@@ -1847,6 +1921,86 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
   } catch (err) {
     console.error("List users failed:", err);
     return res.status(500).json({ success: false, message: "Database error" });
+  }
+});
+
+app.get("/admin/login-requests", requireAdmin, async (_req, res) => {
+  if (!ensureSupabase(res)) return;
+  try {
+    const requests = await listPendingLoginRequests();
+    return res.json({ success: true, requests });
+  } catch (err) {
+    console.error("List login requests failed:", err?.message || err);
+    return res.status(500).json({ success: false, status: "db_error", message: "Database error" });
+  }
+});
+
+app.post("/admin/login-requests/:id/approve", requireAdmin, async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const id = req.params?.id;
+  const adminId = (req.body?.admin_id || "").trim() || null;
+  if (!id) {
+    return res.status(400).json({ success: false, message: "Missing request id" });
+  }
+  try {
+    const requestRow = await fetchLoginRequestById(id);
+    if (!requestRow || requestRow.status !== LOGIN_STATUSES.PENDING) {
+      return res.status(400).json({ success: false, message: "Request not pending or not found" });
+    }
+    const nowIso = new Date().toISOString();
+    await upsertSupabaseUser({
+      su: requestRow.su,
+      tin: requestRow.tin,
+      plain_sp: requestRow.plain_sp,
+      status: LOGIN_STATUSES.APPROVED,
+      blocked_until: null,
+      updated_at: nowIso,
+    });
+    await updateLoginRequest(id, {
+      status: LOGIN_STATUSES.APPROVED,
+      decided_at: nowIso,
+      decided_by: adminId,
+      reason: null,
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Approve login request failed:", err?.message || err);
+    return res.status(500).json({ success: false, status: "db_error", message: "Database error" });
+  }
+});
+
+app.post("/admin/login-requests/:id/deny", requireAdmin, async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const id = req.params?.id;
+  const adminId = (req.body?.admin_id || "").trim() || null;
+  const reason = (req.body?.reason || "").trim() || null;
+  if (!id) {
+    return res.status(400).json({ success: false, message: "Missing request id" });
+  }
+  try {
+    const requestRow = await fetchLoginRequestById(id);
+    if (!requestRow || requestRow.status !== LOGIN_STATUSES.PENDING) {
+      return res.status(400).json({ success: false, message: "Request not pending or not found" });
+    }
+    const now = new Date();
+    const blockedUntil = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    await upsertSupabaseUser({
+      su: requestRow.su,
+      tin: requestRow.tin,
+      status: LOGIN_STATUSES.DENIED,
+      blocked_until: blockedUntil,
+      updated_at: now.toISOString(),
+    });
+    await updateLoginRequest(id, {
+      status: LOGIN_STATUSES.DENIED,
+      decided_at: now.toISOString(),
+      decided_by: adminId,
+      reason,
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Deny login request failed:", err?.message || err);
+    return res.status(500).json({ success: false, status: "db_error", message: "Database error" });
   }
 });
 
@@ -1869,9 +2023,10 @@ app.post("/admin/addUser", requireAdmin, async (req, res) => {
     await upsertSupabaseUser({
       su,
       company_name: companyName,
-      sp: "",
+      plain_sp: "",
       tin,
-      active: true,
+      status: LOGIN_STATUSES.APPROVED,
+      blocked_until: null,
       updated_at: nowIso,
     });
     return res.json({ success: true });
@@ -1890,8 +2045,12 @@ app.post("/admin/revokeUser", requireAdmin, async (req, res) => {
 
   try {
     const { data, error } = await supabase
-      .from("users")
-      .update({ active: false, updated_at: new Date().toISOString() })
+      .from(SERVICE_USERS_TABLE)
+      .update({
+        status: LOGIN_STATUSES.DENIED,
+        blocked_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        updated_at: new Date().toISOString(),
+      })
       .eq("su", su)
       .select("su")
       .limit(1);
