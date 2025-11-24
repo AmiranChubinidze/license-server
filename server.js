@@ -48,10 +48,17 @@ const SOAP_DATE_KEY_OVERRIDE = process.env.SOAP_DATE_KEY
   : null;
 let soapDateKey = SOAP_DATE_KEY_OVERRIDE || SOAP_DATE_KEYS[0];
 const WAYBILL_ALLOWED_STATUSES = new Set(["1", "2", "8", "-2"]);
-const WAYBILL_EXCLUDED_TYPE = "6";
-const WAYBILL_AMOUNT_FIELDS = ["FULL_AMOUNT", "AMOUNT", "TOTAL_AMOUNT", "SUM_AMOUNT"];
+const WAYBILL_AMOUNT_FIELDS = ["FULL_AMOUNT"];
+const WAYBILL_EXPECTED_TYPE = "2";
 const WAYBILL_ID_KEYS = ["WAYBILL_ID", "WB_ID", "ID", "DOC_ID", "WAYBILLID"];
 const WAYBILL_PARENT_KEYS = ["PAR_ID", "PARENT_ID", "CORRECTED_ID", "CORR_ID"];
+const WAYBILL_IS_CORRECTED_KEYS = [
+  "IS_CORRECTED",
+  "ISCORRECTED",
+  "IS_CORRECTION",
+  "IS_CORR",
+  "CORRECTED",
+];
 const WAYBILL_SELLER_KEYS = ["SELER_UN_ID", "SELLER_UN_ID", "SELLER_ID"];
 const WAYBILL_SELLER_TIN_KEYS = ["SELLER_TIN"];
 const WAYBILL_BUYER_TIN_KEYS = ["BUYER_TIN", "BUYERID", "BUYER_ID"];
@@ -73,6 +80,7 @@ const WAYBILL_CANDIDATE_FIELDS = new Set([
   "SELLER_UN_ID",
   "BUYER_TIN",
 ]);
+const WAYBILL_DATE_SOURCE = "BEGIN_DATE";
 const { stripPrefix } = xml2js.processors;
 const SOAP_DATASET_PARSER = new xml2js.Parser({
   explicitArray: false,
@@ -691,88 +699,81 @@ function filterWaybillRecords(records, config, targetRange, options = {}) {
   const logBuffer = debug ? [] : null;
   const captureLists = Boolean(options.captureLists);
   const included = [];
-  const excludedRecords = captureLists ? [] : null;
+  const excluded = [];
   let excludedCount = 0;
+  let includedCount = 0;
+  let total = 0;
 
-  const { correctedParentIds, childByParentId } = buildCorrectionIndex(records);
+  const correctionContext = buildCorrectionIndex(records);
 
   for (const record of records) {
-    const reason = determineExclusionReason(record, config, {
-      correctedParentIds,
-      childByParentId,
+    const id = resolveWaybillId(record) || "unknown";
+    const log = (tag, message) => {
+      const entry = `[${tag}] id=${id} ${message}`;
+      if (logBuffer) {
+        logBuffer.push(entry);
+      }
+      if (debug && !logBuffer) {
+        console.debug(entry);
+      }
+    };
+
+    const decision = determineExclusionReason(record, config, {
+      ...correctionContext,
       targetRange,
-      logBuffer,
+      log,
     });
-    if (reason) {
+
+    const debugEntry = buildDebugEntry(record, decision);
+
+    if (decision.exclude) {
       excludedCount += 1;
-      emitFilterLog(logBuffer, reason);
-      if (captureLists && excludedRecords) {
-        excludedRecords.push({
-          record,
-          exclusionReason: reason,
-          id: resolveWaybillId(record) || "unknown",
-        });
+      if (captureLists) {
+        excluded.push(debugEntry);
       }
       continue;
     }
-    included.push(record);
+
+    includedCount += 1;
+    total += decision.amount;
+    log("AMOUNT_ADDED", `amount=${decision.amount.toFixed(2)}`);
+    if (captureLists) {
+      included.push(debugEntry);
+    }
   }
 
-  const total = included.reduce(
-    (acc, record) =>
-      acc +
-      extractAmountFromRecord(record, {
-        debug,
-        logBuffer,
-        id: resolveWaybillId(record) || "unknown",
-      }),
-    0
-  );
+  if (logBuffer) {
+    logBuffer.push(
+      `[FINAL_SUM] total=${total.toFixed(2)} included=${includedCount} excluded=${excludedCount}`
+    );
+  }
 
   return {
     total,
-    included: included.length,
+    included: includedCount,
     excluded: excludedCount,
     logs: logBuffer || undefined,
     includedRecords: captureLists ? included : undefined,
-    excludedRecords: captureLists ? excludedRecords || [] : undefined,
+    excludedRecords: captureLists ? excluded : undefined,
   };
 }
 
-function extractAmountFromRecord(record, options = {}) {
-  const debug = Boolean(options.debug);
-  const logBuffer = options.logBuffer || null;
-  const id = options.id || resolveWaybillId(record) || "unknown";
-
-  for (const key of WAYBILL_AMOUNT_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(record, key)) {
-      continue;
-    }
-    const rawValue = Array.isArray(record[key]) ? record[key][0] : record[key];
-    const amount = normalizeAmount(rawValue);
-    if (Number.isFinite(amount)) {
-      emitDebugLog(`[AMOUNT] id=${id} value=${amount}`, logBuffer, debug);
-      return amount;
-    }
-  }
-  emitDebugLog(`[AMOUNT] id=${id} value=0`, logBuffer, debug);
-  return 0;
-}
-
 function buildCorrectionIndex(records) {
-  const correctedParentIds = new Set();
-  const childByParentId = new Map();
+  const parentToChildId = new Map();
+  const childToParentId = new Map();
+
   for (const record of records) {
     const parentId = resolveParentId(record);
     const childId = resolveWaybillId(record);
-    if (parentId) {
-      correctedParentIds.add(parentId);
-      if (childId) {
-        childByParentId.set(parentId, childId);
-      }
+    const isCorrected = normalizeIsCorrected(getFirstValue(record, WAYBILL_IS_CORRECTED_KEYS));
+
+    if (parentId && childId && isCorrected) {
+      parentToChildId.set(parentId, childId);
+      childToParentId.set(childId, parentId);
     }
   }
-  return { correctedParentIds, childByParentId };
+
+  return { parentToChildId, childToParentId };
 }
 
 function resolveWaybillId(record) {
@@ -802,118 +803,260 @@ function getFirstValue(record, keys) {
 
 function determineExclusionReason(record, config, correctionContext = {}) {
   const id = resolveWaybillId(record) || "unknown";
-  const debug = Boolean(config.debugLogs);
-  const logBuffer = correctionContext.logBuffer || null;
-  const status = String(record.STATUS ?? "").trim();
-  const normalizedStatus = status ? String(Number(status) || status).trim() : "";
-  if (normalizedStatus && !WAYBILL_ALLOWED_STATUSES.has(normalizedStatus)) {
-    return `Skipped STATUS=${normalizedStatus} waybill ID=${id}`;
-  }
-
-  const typeValue = String(record.TYPE ?? "").trim();
-  const normalizedType = typeValue ? String(Number(typeValue) || typeValue).trim() : "";
-  if (normalizedType === WAYBILL_EXCLUDED_TYPE) {
-    return `Excluded TYPE=${WAYBILL_EXCLUDED_TYPE} sub-waybill ID=${id}`;
-  }
-
-  if (id && correctionContext.correctedParentIds?.has(id)) {
-    const child = correctionContext.childByParentId?.get(id);
-    if (child) {
-      return `Excluded corrected parent ID=${id} replaced_by=${child}`;
-    }
-    return `Excluded corrected parent ID=${id}`;
-  }
-
-  const sellerUnId = String(getFirstValue(record, WAYBILL_SELLER_KEYS) || "").trim();
+  const log = correctionContext.log;
+  const parentId = resolveParentId(record);
+  const status = normalizeStatus(getFirstValue(record, ["STATUS"]));
+  const type = normalizeType(getFirstValue(record, ["TYPE"]));
   const sellerTin = normalizeTin(getFirstValue(record, WAYBILL_SELLER_TIN_KEYS));
   const buyerTin = normalizeTin(getFirstValue(record, WAYBILL_BUYER_TIN_KEYS));
   const transporterTin = normalizeTin(getFirstValue(record, WAYBILL_TRANSPORTER_TIN_KEYS));
+  const isCorrected = normalizeIsCorrected(getFirstValue(record, WAYBILL_IS_CORRECTED_KEYS));
+  const role = resolveRole(config.myTin, sellerTin, buyerTin, transporterTin);
+  const effectiveDate = getEffectiveDate(record, { id, log });
+  const rawDates = {
+    begin: getFirstValue(record, [WAYBILL_DATE_SOURCE]),
+    activate: getFirstValue(record, ["ACTIVATE_DATE"]),
+    create: getFirstValue(record, ["CREATE_DATE"]),
+  };
+  const baseDecision = {
+    exclude: false,
+    reason: null,
+    id,
+    status,
+    type,
+    sellerTin,
+    buyerTin,
+    parentId,
+    isCorrected,
+    role,
+    effectiveDate,
+    rawDates,
+    amount: null,
+    transporterTin,
+    myTin: config.myTin || "",
+  };
 
-  const hasPartyContext = Boolean(config.mySellerUnId || config.myTin);
-  const isSeller =
-    Boolean(config.mySellerUnId && sellerUnId && config.mySellerUnId === sellerUnId) ||
-    Boolean(config.myTin && sellerTin && config.myTin === sellerTin);
-  const isBuyer = Boolean(config.myTin && buyerTin && config.myTin === buyerTin);
-  const transporterMatches =
-    Boolean(config.myTin) && Boolean(transporterTin) && config.myTin === transporterTin;
+  if (isCorrected && parentId && log) {
+    log("CORRECTION_LOGIC", `action=child_replaces parent_id=${parentId}`);
+  }
 
-  if (hasPartyContext && !isSeller && !isBuyer) {
-    if (transporterMatches) {
-      return `Excluded transporter-only waybill ID=${id}`;
+  if (correctionContext.parentToChildId?.has(id)) {
+    const childId = correctionContext.parentToChildId.get(id);
+    if (log) {
+      log("CORRECTION_LOGIC", `action=excluded_parent child_id=${childId}`);
     }
-    if (transporterTin && config.myTin && transporterTin !== config.myTin) {
-      return `Excluded transporter mismatch waybill ID=${id}`;
+    return {
+      ...baseDecision,
+      exclude: true,
+      reason: `replaced by corrected child ${childId || ""}`.trim(),
+    };
+  }
+
+  if (!effectiveDate) {
+    if (log) {
+      log("DATE_FILTER_OUT", 'reason="missing or invalid BEGIN_DATE"');
     }
-    return `Excluded non-matching party waybill ID=${id}`;
+    return {
+      ...baseDecision,
+      exclude: true,
+      reason: "missing or invalid BEGIN_DATE",
+    };
   }
 
   if (correctionContext?.targetRange) {
     const { start, end } = correctionContext.targetRange;
-    const effectiveDate = getEffectiveDate(record, { debug, logBuffer, id });
-    if (!effectiveDate) {
-      emitDebugLog(
-        `[DATE_FILTER_OUT] id=${id} effective=null reason="missing effective date"`,
-        logBuffer,
-        debug
-      );
-      return `Excluded waybill ID=${id} missing effective date for range ${start}..${end}`;
-    }
     if (effectiveDate < start || effectiveDate > end) {
-      emitDebugLog(
-        `[DATE_FILTER_OUT] id=${id} effective=${effectiveDate} reason="outside target range"`,
-        logBuffer,
-        debug
-      );
-      return `Excluded waybill ID=${id} effective_date=${effectiveDate} outside ${start}..${end}`;
+      if (log) {
+        log(
+          "DATE_FILTER_OUT",
+          `effective=${effectiveDate} reason="outside target range ${start}..${end}"`
+        );
+      }
+      return {
+        ...baseDecision,
+        exclude: true,
+        reason: `effective date ${effectiveDate} outside ${start}..${end}`,
+      };
     }
   }
 
-  return null;
+  if (!WAYBILL_ALLOWED_STATUSES.has(status)) {
+    if (log) {
+      log("STATUS_FILTER_OUT", `status=${status || "unknown"}`);
+    }
+    return {
+      ...baseDecision,
+      exclude: true,
+      reason: `status ${status || "unknown"} not counted`,
+    };
+  }
+
+  if (type !== WAYBILL_EXPECTED_TYPE) {
+    if (log) {
+      log("TYPE_FILTER_OUT", `type=${type || "unknown"}`);
+    }
+    return {
+      ...baseDecision,
+      exclude: true,
+      reason: `type ${type || "unknown"} not counted`,
+    };
+  }
+
+  if (!config.myTin) {
+    if (log) {
+      log("SELLER_FILTER_OUT", 'reason="MY_TIN not configured"');
+    }
+    return {
+      ...baseDecision,
+      exclude: true,
+      reason: "MY_TIN missing for seller filter",
+    };
+  }
+
+  if (!sellerTin || sellerTin !== config.myTin) {
+    if (log) {
+      log("SELLER_FILTER_OUT", `seller=${sellerTin || "missing"} my_tin=${config.myTin}`);
+    }
+    return {
+      ...baseDecision,
+      exclude: true,
+      reason: "seller TIN mismatch",
+    };
+  }
+
+  if (buyerTin && buyerTin === sellerTin) {
+    if (log) {
+      log("INTERNAL_MOVEMENT_OUT", `seller=${sellerTin}`);
+    }
+    return {
+      ...baseDecision,
+      exclude: true,
+      reason: "internal movement",
+    };
+  }
+
+  const amount = normalizeFullAmount(record);
+  if (amount === null) {
+    if (log) {
+      log("AMOUNT_FILTER_OUT", 'reason="invalid FULL_AMOUNT"');
+    }
+    return {
+      ...baseDecision,
+      exclude: true,
+      reason: "invalid FULL_AMOUNT",
+    };
+  }
+
+  return {
+    ...baseDecision,
+    amount,
+  };
 }
 
-// RS.ge returns rows by last_update_date, but financial month totals must be based on ACTIVATE_DATE
-// with BEGIN_DATE then CREATE_DATE as fallbacks. Dates are normalized to YYYY-MM-DD, and an invalid
-// ACTIVATE_DATE blocks other fallbacks.
+// Transportation totals are calculated strictly by BEGIN_DATE. Invalid or missing dates exclude the waybill.
 function getEffectiveDate(waybill, options = {}) {
-  const debug = Boolean(options?.debug);
-  const logBuffer = options?.logBuffer || null;
   const id = options?.id || resolveWaybillId(waybill) || "unknown";
+  const log = options?.log;
+  const beginRaw = getFirstValue(waybill, [WAYBILL_DATE_SOURCE]);
+  const normalized = normalizeWaybillDate(beginRaw);
 
-  const logPick = (source, value) =>
-    emitDebugLog(`[DATE_PICK] id=${id} source=${source} value=${value}`, logBuffer, debug);
+  if (log) {
+    log("DATE_PICK", `source=${WAYBILL_DATE_SOURCE} value=${normalized || beginRaw || "missing"}`);
+  }
 
-  const readField = (key) => {
-    if (!Object.prototype.hasOwnProperty.call(waybill, key)) {
-      return undefined;
-    }
-    const raw = waybill[key];
-    return Array.isArray(raw) ? raw[0] : raw;
-  };
+  return normalized;
+}
 
-  if (Object.prototype.hasOwnProperty.call(waybill, "ACTIVATE_DATE")) {
-    const normalized = normalizeWaybillDate(readField("ACTIVATE_DATE"));
-    if (normalized) {
-      logPick("ACTIVATE_DATE", normalized);
-      return normalized;
-    }
-    logPick("ACTIVATE_DATE", "invalid");
+function normalizeFullAmount(record) {
+  const raw = getFirstValue(record, WAYBILL_AMOUNT_FIELDS);
+  if (raw === undefined || raw === null || raw === "") {
     return null;
   }
-
-  const beginDate = normalizeWaybillDate(readField("BEGIN_DATE"));
-  if (beginDate) {
-    logPick("BEGIN_DATE", beginDate);
-    return beginDate;
+  const amount = normalizeAmount(raw);
+  if (!Number.isFinite(amount)) {
+    return null;
   }
-
-  const createDate = normalizeWaybillDate(readField("CREATE_DATE"));
-  if (createDate) {
-    logPick("CREATE_DATE", createDate);
-    return createDate;
+  if (amount < 0) {
+    return null;
   }
+  return amount;
+}
 
-  logPick("NONE", "missing");
-  return null;
+function normalizeStatus(raw) {
+  const value = raw === undefined || raw === null ? "" : String(raw).trim();
+  if (!value) {
+    return "";
+  }
+  const num = Number(value);
+  if (Number.isFinite(num)) {
+    return String(num);
+  }
+  return value;
+}
+
+function normalizeType(raw) {
+  const value = raw === undefined || raw === null ? "" : String(raw).trim();
+  if (!value) {
+    return "";
+  }
+  const num = Number(value);
+  if (Number.isFinite(num)) {
+    return String(num);
+  }
+  return value;
+}
+
+function normalizeIsCorrected(raw) {
+  const value = raw === undefined || raw === null ? "" : String(raw).trim().toLowerCase();
+  if (!value) {
+    return false;
+  }
+  if (["1", "true", "yes"].includes(value)) {
+    return true;
+  }
+  const num = Number(value);
+  return Number.isFinite(num) && num === 1;
+}
+
+function resolveRole(myTin, sellerTin, buyerTin, transporterTin) {
+  if (myTin && sellerTin && myTin === sellerTin) {
+    return "seller";
+  }
+  if (myTin && buyerTin && myTin === buyerTin) {
+    return "buyer";
+  }
+  if (myTin && transporterTin && myTin === transporterTin) {
+    return "transporter";
+  }
+  return "unknown";
+}
+
+function buildDebugEntry(record, decision) {
+  const amount = Number.isFinite(decision.amount) ? Number(decision.amount.toFixed(2)) : null;
+  const sellerTin = decision.sellerTin ?? normalizeTin(getFirstValue(record, WAYBILL_SELLER_TIN_KEYS));
+  const buyerTin = decision.buyerTin ?? normalizeTin(getFirstValue(record, WAYBILL_BUYER_TIN_KEYS));
+  return {
+    ID: decision.id || resolveWaybillId(record) || "",
+    TYPE: decision.type || "",
+    STATUS: decision.status || "",
+    EFFECTIVE_DATE: decision.effectiveDate || null,
+    FULL_AMOUNT: amount,
+    SELLER_TIN: sellerTin,
+    BUYER_TIN: buyerTin,
+    PAR_ID: decision.parentId || "",
+    IS_CORRECTED: decision.isCorrected || false,
+    EXCLUDED_REASON: decision.reason || null,
+    ROLE: decision.role || resolveRole(decision.myTin, sellerTin, buyerTin, decision.transporterTin),
+    DATE_SOURCE: WAYBILL_DATE_SOURCE,
+    RAW_DATES: {
+      BEGIN_DATE:
+        decision.rawDates?.begin ??
+        getFirstValue(record, [WAYBILL_DATE_SOURCE]) ??
+        "",
+      ACTIVATE_DATE: decision.rawDates?.activate ?? getFirstValue(record, ["ACTIVATE_DATE"]) ?? "",
+      CREATE_DATE: decision.rawDates?.create ?? getFirstValue(record, ["CREATE_DATE"]) ?? "",
+    },
+  };
 }
 
 function isValidDateParts(year, month, day) {
@@ -966,6 +1109,14 @@ function normalizeWaybillDate(raw) {
   return isValidDateParts(year, month, day) ? iso : null;
 }
 
+function emitAnomalyLog(id, reason, buffer) {
+  const entry = `[WAYBILL_ANOMALY] ID=${id} reason=${reason}`;
+  console.warn(entry);
+  if (buffer) {
+    buffer.push(entry);
+  }
+}
+
 function emitDebugLog(entry, buffer, debug) {
   if (buffer) {
     buffer.push(entry);
@@ -998,20 +1149,16 @@ function emitFilterLog(buffer, message) {
 
 function createWaybillFilterConfig(env = {}) {
   const myTin = normalizeTin(env.MY_TIN || "");
-  const mySellerUnId = (env.MY_SELLER_UN_ID || "").trim();
   const debugLogs = parseBoolean(env.DEBUG_FILTER_LOGS);
 
   if (!myTin) {
-    console.warn("[WAYBILL_FILTER] MY_TIN not configured; buyer filtering limited");
-  }
-  if (!mySellerUnId) {
-    console.warn("[WAYBILL_FILTER] MY_SELLER_UN_ID not configured; seller filtering limited");
+    console.warn("[WAYBILL_FILTER] MY_TIN not configured; seller-side filtering unavailable");
   }
   if (debugLogs) {
     console.log("[WAYBILL_FILTER] Debug logging enabled");
   }
 
-  return { myTin, mySellerUnId, debugLogs };
+  return { myTin, debugLogs };
 }
 
 function buildWaybillFilterConfig(overrides = {}) {
@@ -1379,6 +1526,79 @@ app.get("/debug/waybills", async (req, res) => {
       });
     }
     console.error("[/debug/waybills] Failed:", err?.message || err);
+    if (err?.isSoapError) {
+      return res.status(502).json({
+        success: false,
+        message: "RS.ge SOAP error",
+        details: err.message || "SOAP request failed",
+      });
+    }
+
+    const isJwtError =
+      err?.name === "JsonWebTokenError" ||
+      err?.name === "TokenExpiredError" ||
+      err?.name === "NotBeforeError";
+    if (isJwtError) {
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
+
+    return res
+      .status(500)
+      .json({ success: false, message: err?.message || "Failed to fetch waybills" });
+  }
+});
+
+app.get("/waybill/debugList", async (req, res) => {
+  if (!ensureDatabase(res)) return;
+  const token = extractToken(req);
+  if (!token) {
+    return res.status(400).json({ success: false, message: "Missing token" });
+  }
+
+  const monthKey = buildMonthKeyFromQuery(req.query?.year, req.query?.month);
+  const filterConfig = buildWaybillFilterConfig({ debugLogs: true });
+
+  let user;
+  try {
+    const decoded = decodeToken(token);
+    user = await findActiveUser(decoded.su);
+
+    if (!user || !user.active) {
+      return res.status(401).json({ success: false, message: "User revoked or not found" });
+    }
+
+    const effectiveSp = selectEffectiveSp(user.sp, decoded.sp, decoded.su);
+    if (!effectiveSp) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Session expired; please login again" });
+    }
+
+    const result = await fetchWaybillTotal(
+      { su: user.su, sp: effectiveSp },
+      monthKey,
+      { filterConfig, captureLists: true }
+    );
+
+    return res.json({
+      success: true,
+      included: result.includedRecords || [],
+      excluded: result.excludedRecords || [],
+      logs: result.logs || [],
+    });
+  } catch (err) {
+    if (err?.soapStatus === -1072) {
+      console.warn(
+        `[SOAP] SU ${user?.su || "unknown"} returned STATUS -1072 (RS permissions or limits)`
+      );
+      return res.status(403).json({
+        success: false,
+        code: -1072,
+        message:
+          "RS.ge rejected this request (STATUS -1072). Please verify SU permissions or try again later.",
+      });
+    }
+    console.error("[/waybill/debugList] Failed:", err?.message || err);
     if (err?.isSoapError) {
       return res.status(502).json({
         success: false,
