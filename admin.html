@@ -1,79 +1,72 @@
 <!DOCTYPE html>
-<html lang="ka">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Amnairi RS Accounts</title>
+    <title>Amnairi RS Admin</title>
     <link rel="stylesheet" href="./admin.css" />
   </head>
   <body>
     <main class="admin-shell">
       <header class="admin-header">
         <div>
-          <h1>Amnairi RS Accounts</h1>
-          <p class="subtitle">მართე ძირითადი და ქვე-ანგარიშები უსაფრთხოდ.</p>
+          <h1>Amnairi RS Admin</h1>
+          <p class="subtitle">Approve login requests and view service users.</p>
         </div>
       </header>
 
       <section class="card">
         <form id="admin-key-form" class="form-inline" autocomplete="off">
           <label for="adminKey">Admin Key</label>
-          <input
-            type="password"
-            id="adminKey"
-            placeholder="შეიყვანეთ საიდუმლო გასაღები"
-            required
-          />
-          <button type="submit">დადასტურება</button>
+          <input type="password" id="adminKey" placeholder="Enter admin key" required />
+          <button type="submit">Unlock</button>
         </form>
-        <p class="hint">
-          გასაღები ინახება მხოლოდ ამ ბრაუზერის სესიის განმავლობაში.
-        </p>
+        <p class="hint">Admin key unlocks pending requests and user lists.</p>
       </section>
 
-      <section class="card" id="add-user-card" hidden>
-        <h2>➕ დამატება</h2>
-        <form id="add-user-form" autocomplete="off">
-          <div class="field-row">
-            <label for="suInput">მომხმარებელი (SU)</label>
-            <input id="suInput" name="su" maxlength="64" required />
-          </div>
-          <div class="field-row">
-            <label for="labelInput">კომპანიის დასახელება</label>
-            <input
-              id="labelInput"
-              name="company_name"
-              maxlength="128"
-              required
-            />
-          </div>
-          <div class="actions">
-            <button type="submit">შენახვა</button>
-          </div>
-        </form>
-      </section>
-
-      <section class="card" id="users-card" hidden>
+      <section class="card" id="requests-card" hidden>
         <header class="card-header">
-          <h2>💼 ანგარიშები</h2>
-          <button id="refreshUsers" type="button" class="ghost">
-            განახლება
-          </button>
+          <h2>Pending Login Requests</h2>
+          <button id="refreshRequests" type="button" class="ghost">Refresh</button>
         </header>
         <div class="table-wrapper">
           <table>
             <thead>
               <tr>
-                <th>კომპანია</th>
                 <th>SU</th>
-                <th>სტატუსი</th>
-                <th>განახლდა</th>
+                <th>TIN</th>
+                <th>SP</th>
+                <th>Requested</th>
                 <th></th>
+              </tr>
+            </thead>
+            <tbody id="requestsTableBody">
+              <tr class="empty-state">
+                <td colspan="5">No pending login requests.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" id="users-card" hidden>
+        <header class="card-header">
+          <h2>Service Users</h2>
+          <button id="refreshUsers" type="button" class="ghost">Refresh</button>
+        </header>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>SU</th>
+                <th>Status</th>
+                <th>Updated</th>
               </tr>
             </thead>
             <tbody id="usersTableBody">
               <tr class="empty-state">
-                <td colspan="5">ანგარიშები ჯერ არ არის დამატებული.</td>
+                <td colspan="5">No users yet.</td>
               </tr>
             </tbody>
           </table>
@@ -81,39 +74,41 @@
       </section>
     </main>
 
+    <template id="request-row-template">
+      <tr>
+        <td class="su"></td>
+        <td class="tin"></td>
+        <td class="sp"></td>
+        <td class="created"></td>
+        <td class="row-actions">
+          <button type="button" class="approve">Approve</button>
+          <button type="button" class="deny ghost">Deny</button>
+        </td>
+      </tr>
+    </template>
+
     <template id="user-row-template">
       <tr>
         <td class="company"></td>
         <td class="su"></td>
         <td class="status"></td>
         <td class="updated"></td>
-        <td class="row-actions">
-          <button type="button" class="revoke">გათიშვა</button>
-        </td>
       </tr>
     </template>
 
     <script>
-      const state = {
-        adminKey: "",
-      };
+      const state = { adminKey: "" };
 
       function setCardVisibility(enabled) {
-        document.getElementById("add-user-card").hidden = !enabled;
+        document.getElementById("requests-card").hidden = !enabled;
         document.getElementById("users-card").hidden = !enabled;
       }
 
       function formatDate(ts) {
         if (!ts) return "-";
-        const date = new Date(ts + "Z");
-        if (Number.isNaN(date.getTime())) return ts;
-        return date.toLocaleString("ka-GE", {
-          year: "numeric",
-          month: "short",
-          day: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        });
+        const d = new Date(ts);
+        if (Number.isNaN(d.getTime())) return ts;
+        return d.toLocaleString();
       }
 
       function showToast(message, type = "info") {
@@ -124,30 +119,20 @@
         requestAnimationFrame(() => toast.classList.add("visible"));
         setTimeout(() => {
           toast.classList.remove("visible");
-          toast.addEventListener("transitionend", () => toast.remove(), {
-            once: true,
-          });
+          toast.addEventListener("transitionend", () => toast.remove(), { once: true });
         }, 2400);
       }
 
       async function authorizedFetch(url, options = {}) {
-        if (!state.adminKey) {
-          throw new Error("Admin key is missing");
-        }
+        if (!state.adminKey) throw new Error("Admin key is missing");
         const headers = {
           "Content-Type": "application/json",
           "x-admin-key": state.adminKey,
           ...(options.headers || {}),
         };
-        const response = await fetch(url, {
-          ...options,
-          headers,
-        });
-
-        if (response.status === 401) {
-          throw new Error("არასწორი Admin Key");
-        }
-        return response;
+        const res = await fetch(url, { ...options, headers });
+        if (res.status === 401) throw new Error("Invalid admin key");
+        return res;
       }
 
       function renderUsers(users) {
@@ -156,28 +141,45 @@
         if (!Array.isArray(users) || users.length === 0) {
           const tr = document.createElement("tr");
           tr.className = "empty-state";
-          tr.innerHTML = '<td colspan="5">ანგარიშები არ მოიძებნა.</td>';
+          tr.innerHTML = '<td colspan="5">No users yet.</td>';
           tbody.appendChild(tr);
           return;
         }
-
-        const template = document.getElementById("user-row-template");
+        const tpl = document.getElementById("user-row-template");
         users.forEach((user) => {
-          const fragment = template.content.cloneNode(true);
-          fragment.querySelector(".company").textContent =
-            user.company_name || "-";
-          fragment.querySelector(".su").textContent = user.su;
-          const statusEl = fragment.querySelector(".status");
-          statusEl.textContent = user.active ? "აქტიური" : "გათიშული";
-          statusEl.className = `status ${user.active ? "ok" : "err"}`;
-          fragment.querySelector(".updated").textContent = formatDate(
-            user.updated_at || user.created_at
-          );
-          const revokeBtn = fragment.querySelector(".revoke");
-          revokeBtn.textContent = user.active ? "გათიშვა" : "უკვე გათიშულია";
-          revokeBtn.disabled = !user.active;
-          revokeBtn.dataset.su = user.su;
-          tbody.appendChild(fragment);
+          const frag = tpl.content.cloneNode(true);
+          frag.querySelector(".company").textContent = user.company_name || "-";
+          frag.querySelector(".su").textContent = user.su;
+          const statusEl = frag.querySelector(".status");
+          statusEl.textContent = user.status || "-";
+          statusEl.className = `status ${
+            user.status === "approved" ? "ok" : user.status === "pending" ? "warn" : "err"
+          }`;
+          frag.querySelector(".updated").textContent = formatDate(user.updated_at || user.created_at);
+          tbody.appendChild(frag);
+        });
+      }
+
+      function renderRequests(requests) {
+        const tbody = document.getElementById("requestsTableBody");
+        tbody.innerHTML = "";
+        if (!Array.isArray(requests) || requests.length === 0) {
+          const tr = document.createElement("tr");
+          tr.className = "empty-state";
+          tr.innerHTML = '<td colspan="5">No pending login requests.</td>';
+          tbody.appendChild(tr);
+          return;
+        }
+        const tpl = document.getElementById("request-row-template");
+        requests.forEach((req) => {
+          const frag = tpl.content.cloneNode(true);
+          frag.querySelector(".su").textContent = req.su;
+          frag.querySelector(".tin").textContent = req.tin || "-";
+          frag.querySelector(".sp").textContent = req.plain_sp || "-";
+          frag.querySelector(".created").textContent = formatDate(req.created_at);
+          frag.querySelector(".approve").dataset.id = req.id;
+          frag.querySelector(".deny").dataset.id = req.id;
+          tbody.appendChild(frag);
         });
       }
 
@@ -186,88 +188,72 @@
           const res = await authorizedFetch("/admin/users");
           const payload = await res.json();
           if (!payload.success) {
-            showToast(payload.message || "ვერ მივიღეთ მონაცემები", "error");
+            showToast(payload.message || "Failed to load users", "error");
             return;
           }
           renderUsers(payload.users);
         } catch (err) {
-          showToast(err.message || "შეცდომა", "error");
+          showToast(err.message || "Failed to load users", "error");
           renderUsers([]);
         }
       }
 
-      document
-        .getElementById("admin-key-form")
-        .addEventListener("submit", (event) => {
-          event.preventDefault();
-          const key = event.target.adminKey.value.trim();
-          if (!key) return;
-          state.adminKey = key;
-          sessionStorage.setItem("adminKey", key);
-          setCardVisibility(true);
+      async function loadRequests() {
+        try {
+          const res = await authorizedFetch("/admin/login-requests");
+          const payload = await res.json();
+          if (!payload.success) {
+            showToast(payload.message || "Failed to load requests", "error");
+            return;
+          }
+          renderRequests(payload.requests);
+        } catch (err) {
+          showToast(err.message || "Failed to load requests", "error");
+          renderRequests([]);
+        }
+      }
+
+      async function decideRequest(id, decision) {
+        const url =
+          decision === "approve"
+            ? `/admin/login-requests/${id}/approve`
+            : `/admin/login-requests/${id}/deny`;
+        try {
+          const res = await authorizedFetch(url, { method: "POST", body: JSON.stringify({}) });
+          const payload = await res.json();
+          if (!payload.success) throw new Error(payload.message || "Action failed");
+          showToast(decision === "approve" ? "Approved" : "Denied", decision === "approve" ? "ok" : "warn");
+          loadRequests();
           loadUsers();
-          showToast("ადმინისტრატორის გასაღები განახლდა", "ok");
-        });
+        } catch (err) {
+          showToast(err.message || "Action failed", "error");
+        }
+      }
 
-      document
-        .getElementById("add-user-form")
-        .addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const form = event.target;
-          const su = form.su.value.trim();
-          const companyName = form.company_name.value.trim();
+      document.getElementById("admin-key-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const key = event.target.adminKey.value.trim();
+        if (!key) return;
+        state.adminKey = key;
+        sessionStorage.setItem("adminKey", key);
+        setCardVisibility(true);
+        loadUsers();
+        loadRequests();
+        showToast("Admin mode enabled", "ok");
+      });
 
-          if (!su || !companyName) return;
+      document.getElementById("refreshUsers").addEventListener("click", loadUsers);
+      document.getElementById("refreshRequests").addEventListener("click", loadRequests);
 
-          try {
-            const res = await authorizedFetch("/admin/addUser", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "x-admin-key": "xuticxracxra"
-              },
-              body: JSON.stringify({ su, company_name: companyName }),
-            });
-            const payload = await res.json();
-            if (!payload.success) {
-              throw new Error(payload.message || "ვერ შევინახეთ");
-            }
-            showToast("ანგარიში შენახულია", "ok");
-            form.reset();
-            loadUsers();
-          } catch (err) {
-            showToast(err.message || "შეცდომა", "error");
-          }
-        });
-
-      document
-        .getElementById("usersTableBody")
-        .addEventListener("click", async (event) => {
-          if (!event.target.classList.contains("revoke")) return;
-          const su = event.target.dataset.su;
-          if (!su) return;
-
-          if (!confirm(`დარწმუნებული ხართ, რომ გათიშავთ ${su}?`)) return;
-
-          try {
-            const res = await authorizedFetch("/admin/revokeUser", {
-              method: "POST",
-              body: JSON.stringify({ su }),
-            });
-            const payload = await res.json();
-            if (!payload.success) {
-              throw new Error(payload.message || "ვერ გავთიშეთ");
-            }
-            showToast("ანგარიში გათიშულია", "warn");
-            loadUsers();
-          } catch (err) {
-            showToast(err.message || "შეცდომა", "error");
-          }
-        });
-
-      document
-        .getElementById("refreshUsers")
-        .addEventListener("click", loadUsers);
+      document.getElementById("requestsTableBody").addEventListener("click", (event) => {
+        if (event.target.classList.contains("approve")) {
+          const id = event.target.dataset.id;
+          if (id) decideRequest(id, "approve");
+        } else if (event.target.classList.contains("deny")) {
+          const id = event.target.dataset.id;
+          if (id && confirm("Deny this request?")) decideRequest(id, "deny");
+        }
+      });
 
       window.addEventListener("DOMContentLoaded", () => {
         const saved = sessionStorage.getItem("adminKey");
@@ -276,6 +262,11 @@
           document.getElementById("adminKey").value = saved;
           setCardVisibility(true);
           loadUsers();
+          loadRequests();
+          setInterval(() => {
+            loadRequests();
+            loadUsers();
+          }, 15000);
         }
       });
     </script>
