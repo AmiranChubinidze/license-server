@@ -1913,6 +1913,7 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from(SERVICE_USERS_TABLE)
       .select("id, su, company_name, tin, status, blocked_until, created_at, updated_at")
+      .neq("status", LOGIN_STATUSES.PENDING)
       .order("company_name", { ascending: true });
     if (error) {
       throw new Error(error.message || "Supabase error");
