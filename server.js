@@ -172,6 +172,19 @@ async function fetchLoginRequestById(id) {
   return Array.isArray(data) && data.length ? data[0] : null;
 }
 
+async function deleteServiceUser(su) {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase
+    .from(SERVICE_USERS_TABLE)
+    .delete()
+    .eq("su", su)
+    .select("su");
+  if (error) {
+    throw new Error(error.message || "Supabase delete failed");
+  }
+  return Array.isArray(data) ? data : [];
+}
+
 async function listPendingLoginRequests() {
   if (!supabase) throw new Error("Supabase not configured");
   const { data, error } = await supabase
@@ -1996,14 +2009,7 @@ app.post("/admin/login-requests/:id/deny", requireAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: "Request not pending or not found" });
     }
     const now = new Date();
-    const blockedUntil = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
-    await upsertSupabaseUser({
-      su: requestRow.su,
-      tin: requestRow.tin,
-      status: LOGIN_STATUSES.DENIED,
-      blocked_until: blockedUntil,
-      updated_at: now.toISOString(),
-    });
+    await deleteServiceUser(requestRow.su);
     await updateLoginRequest(id, {
       status: LOGIN_STATUSES.DENIED,
       decided_at: now.toISOString(),
@@ -2057,23 +2063,7 @@ app.post("/admin/revokeUser", requireAdmin, async (req, res) => {
   }
 
   try {
-    const { data, error } = await supabase
-      .from(SERVICE_USERS_TABLE)
-      .update({
-        status: LOGIN_STATUSES.DENIED,
-        blocked_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("su", su)
-      .select("su")
-      .limit(1);
-    if (error) {
-      throw new Error(error.message || "Supabase error");
-    }
-    if (!data || !data.length) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-
+    await deleteServiceUser(su);
     return res.json({ success: true });
   } catch (err) {
     console.error("Revoke user failed:", err);
