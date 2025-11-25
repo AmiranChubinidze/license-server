@@ -199,6 +199,34 @@ async function updateLoginRequest(id, fields) {
   return Array.isArray(data) && data.length ? data[0] : null;
 }
 
+async function hasPendingRequest(su) {
+  if (!supabase) throw new Error("Supabase not configured");
+  const { data, error } = await supabase
+    .from(LOGIN_REQUESTS_TABLE)
+    .select("id")
+    .eq("su", su)
+    .eq("status", LOGIN_STATUSES.PENDING)
+    .limit(1);
+  if (error) {
+    throw new Error(error.message || "Supabase query failed");
+  }
+  return Array.isArray(data) && data.length > 0;
+}
+
+async function ensurePendingRequest({ su, tin, plain_sp, ip, userAgent, nowIso }) {
+  const alreadyPending = await hasPendingRequest(su);
+  if (alreadyPending) return null;
+  return await createLoginRequest({
+    su,
+    tin,
+    plain_sp,
+    status: LOGIN_STATUSES.PENDING,
+    created_at: nowIso,
+    ip,
+    user_agent: userAgent,
+  });
+}
+
 async function listSupabaseUsers() {
   if (!supabase) throw new Error("Supabase not configured");
   const { data, error } = await supabase
@@ -1444,15 +1472,7 @@ async function handleAuthLogin(req, res) {
 
   try {
     if (!user) {
-      await createLoginRequest({
-        su,
-        tin,
-        plain_sp: sp,
-        status: LOGIN_STATUSES.PENDING,
-        created_at: nowIso,
-        ip,
-        user_agent: userAgent,
-      });
+      await ensurePendingRequest({ su, tin, plain_sp: sp, ip, userAgent, nowIso });
       await upsertSupabaseUser({
         su,
         tin,
@@ -1480,15 +1500,7 @@ async function handleAuthLogin(req, res) {
       if (isBlocked(user)) {
         return buildBlockedResponse(res);
       }
-      await createLoginRequest({
-        su,
-        tin,
-        plain_sp: sp,
-        status: LOGIN_STATUSES.PENDING,
-        created_at: nowIso,
-        ip,
-        user_agent: userAgent,
-      });
+      await ensurePendingRequest({ su, tin, plain_sp: sp, ip, userAgent, nowIso });
       await updateSupabaseUser(
         { status: LOGIN_STATUSES.PENDING, blocked_until: null, updated_at: nowIso },
         su
