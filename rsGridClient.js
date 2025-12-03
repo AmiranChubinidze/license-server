@@ -142,9 +142,39 @@ function parseHiddenValue(html, fieldId) {
 }
 
 function extractPageSession(html) {
-  const pageId = parseHiddenValue(html, "PageID");
-  const sessionId = parseHiddenValue(html, "SessionID");
-  return { pageId, sessionId };
+  const pageIdFromHidden = parseHiddenValue(html, "PageID");
+  const sessionIdFromHidden = parseHiddenValue(html, "SessionID");
+
+  const pageIdRegex = /PageID["']?\s*[:=]\s*["']([^"']+)["']/i;
+  const sessionIdRegex = /SessionID["']?\s*[:=]\s*["']([^"']+)["']/i;
+  const currentTabRegex = /currentTab["']?\s*[:=]\s*["']([^"']+)["']/i;
+
+  let pageId = pageIdFromHidden || "";
+  let sessionId = sessionIdFromHidden || "";
+  let currentTab = "tab_given";
+
+  if (!pageId) {
+    const m = typeof html === "string" ? html.match(pageIdRegex) : null;
+    if (m && m[1]) {
+      pageId = m[1];
+    }
+  }
+
+  if (!sessionId) {
+    const m = typeof html === "string" ? html.match(sessionIdRegex) : null;
+    if (m && m[1]) {
+      sessionId = m[1];
+    }
+  }
+
+  if (typeof html === "string") {
+    const m = html.match(currentTabRegex);
+    if (m && m[1]) {
+      currentTab = m[1];
+    }
+  }
+
+  return { pageId, sessionId, currentTab };
 }
 
 function normalizeRsResponse(payload) {
@@ -337,11 +367,18 @@ async function fetchWaybillPageMeta(session) {
   if (pageResp.status >= 500) {
     throw new RsHttpError("RS waybill page unavailable", pageResp.status);
   }
-  const { pageId, sessionId } = extractPageSession(pageResp.data || "");
+  const html = pageResp.data || "";
+  const { pageId, sessionId, currentTab } = extractPageSession(html);
   if (!pageId || !sessionId) {
+    const snippet =
+      typeof html === "string" ? html.slice(0, 1000) : "[non-string waybill page response]";
+    console.error("[RS_GRID][Waybills][METADATA_PARSE_FAILED]", {
+      reason: "Failed to extract page metadata for waybills",
+      snippet,
+    });
     throw new RsSessionError("Failed to extract page metadata for waybills");
   }
-  return { pageId, sessionId };
+  return { pageId, sessionId, currentTab: currentTab || "tab_given" };
 }
 
 function buildFilterExpression(range) {
