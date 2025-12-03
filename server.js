@@ -870,7 +870,6 @@ function filterWaybillRecords(records, config, targetRange, options = {}) {
   let excludedCount = 0;
   let includedCount = 0;
   let total = 0;
-  const correctionContext = buildCorrectionIndex(records);
 
   for (const record of records) {
     const id = resolveWaybillId(record) || "unknown";
@@ -884,11 +883,7 @@ function filterWaybillRecords(records, config, targetRange, options = {}) {
       }
     };
 
-    const decision = determineExclusionReason(record, config, {
-      ...correctionContext,
-      targetRange,
-      log,
-    });
+    const decision = determineExclusionReason(record, config, { targetRange, log });
 
     const debugEntry = buildDebugEntry(record, decision);
 
@@ -970,14 +965,6 @@ function getFirstValue(record, keys) {
 function determineExclusionReason(record, config, correctionContext = {}) {
   const id = resolveWaybillId(record) || "unknown";
   const log = correctionContext.log;
-  const parentId = resolveParentId(record);
-  const status = normalizeStatus(getFirstValue(record, ["STATUS"]));
-  const type = normalizeType(getFirstValue(record, ["TYPE"]));
-  const sellerTin = normalizeTin(getFirstValue(record, WAYBILL_SELLER_TIN_KEYS));
-  const buyerTin = normalizeTin(getFirstValue(record, WAYBILL_BUYER_TIN_KEYS));
-  const transporterTin = normalizeTin(getFirstValue(record, WAYBILL_TRANSPORTER_TIN_KEYS));
-  const isCorrected = normalizeIsCorrected(getFirstValue(record, WAYBILL_IS_CORRECTED_KEYS));
-  const role = resolveRole(config.myTin, sellerTin, buyerTin, transporterTin);
   const effectiveDate = getEffectiveDate(record, { id, log });
   const rawDates = {
     begin: getFirstValue(record, [WAYBILL_DATE_SOURCE]),
@@ -988,31 +975,10 @@ function determineExclusionReason(record, config, correctionContext = {}) {
     exclude: false,
     reason: null,
     id,
-    status,
-    type,
-    sellerTin,
-    buyerTin,
-    parentId,
-    isCorrected,
-    role,
     effectiveDate,
     rawDates,
     amount: null,
-    transporterTin,
-    myTin: config.myTin || "",
   };
-
-  if (correctionContext.parentToChildId?.has(id)) {
-    const childId = correctionContext.parentToChildId.get(id);
-    if (log) {
-      log("CORRECTION_LOGIC", `action=excluded_parent child_id=${childId || ""}`);
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: `replaced by corrected child ${childId || ""}`.trim(),
-    };
-  }
 
   if (!effectiveDate) {
     if (log) {
@@ -1040,72 +1006,6 @@ function determineExclusionReason(record, config, correctionContext = {}) {
         reason: `begin date ${effectiveDate} outside ${start}..${end}`,
       };
     }
-  }
-
-  if (!WAYBILL_ALLOWED_STATUSES.has(status)) {
-    if (log) {
-      log("STATUS_FILTER_OUT", `status=${status || "unknown"}`);
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: `status ${status || "unknown"} not counted`,
-    };
-  }
-
-  if (type === "6") {
-    if (log) {
-      log("TYPE_FILTER_OUT", "type=6 sub-waybill excluded");
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: "type 6 excluded",
-    };
-  }
-
-  if (type !== WAYBILL_EXPECTED_TYPE) {
-    if (log) {
-      log("TYPE_FILTER_OUT", `type=${type || "unknown"} not expected`);
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: `type ${type || "unknown"} not counted`,
-    };
-  }
-
-  if (!config.myTin) {
-    if (log) {
-      log("SELLER_FILTER_OUT", 'reason="MY_TIN not configured"');
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: "MY_TIN missing for seller filter",
-    };
-  }
-
-  if (!sellerTin || sellerTin !== config.myTin) {
-    if (log) {
-      log("SELLER_FILTER_OUT", `seller=${sellerTin || "missing"} my_tin=${config.myTin}`);
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: "seller TIN mismatch",
-    };
-  }
-
-  if (buyerTin && buyerTin === sellerTin) {
-    if (log) {
-      log("INTERNAL_MOVEMENT_OUT", `seller=${sellerTin}`);
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: "internal movement",
-    };
   }
 
   const amount = normalizeFullAmount(record);
