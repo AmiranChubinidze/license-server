@@ -71,6 +71,13 @@ class RsSessionError extends Error {
   }
 }
 
+class RsHtmlResponseError extends Error {
+  constructor(message) {
+    super(message || "RS returned HTML instead of JSON");
+    this.name = "RsHtmlResponseError";
+  }
+}
+
 /**
  * @typedef {Object} RsSession
  * @property {import("axios").AxiosInstance} client
@@ -134,7 +141,11 @@ function extractPageSession(html) {
 }
 
 function normalizeRsResponse(payload) {
-  if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "d")) {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    Object.prototype.hasOwnProperty.call(payload, "d")
+  ) {
     return payload.d;
   }
   if (typeof payload === "string") {
@@ -305,7 +316,9 @@ async function requestGrid(session, payload) {
     },
   });
   if (isHtmlPayload(resp.data, resp.headers)) {
-    throw new RsSessionError("RS returned HTML for grid request");
+    const err = new RsHtmlResponseError("RS returned HTML for grid request");
+    err.response = resp;
+    throw err;
   }
   if (resp.status >= 500) {
     throw new RsHttpError("RS grid endpoint unavailable", resp.status);
@@ -340,15 +353,22 @@ function pickFullAmount(payload, fallbackRange) {
   const summaryRow = dataSection.SummaryRow || dataSection.summaryRow || payload.SummaryRow;
   const summaryObject = payload.Summary || dataSection.Summary;
 
-  let candidate = null;
-  if (Array.isArray(fields) && Array.isArray(summaryRow)) {
-    const idx = fields.findIndex(
-      (field) => typeof field === "string" && field.toUpperCase() === "FULL_AMOUNT"
-    );
-    if (idx >= 0 && idx < summaryRow.length) {
-      candidate = summaryRow[idx];
-    }
+  if (!Array.isArray(fields) || !Array.isArray(summaryRow)) {
+    const err = new RsSchemaChangedError("Fields or SummaryRow missing in RS response");
+    err.payload = payload;
+    throw err;
   }
+
+  const amountIdx = fields.findIndex(
+    (field) => typeof field === "string" && field.toUpperCase() === "FULL_AMOUNT"
+  );
+  if (amountIdx < 0 || amountIdx >= summaryRow.length) {
+    const err = new RsSchemaChangedError("FULL_AMOUNT missing in RS response");
+    err.payload = payload;
+    throw err;
+  }
+
+  let candidate = summaryRow[amountIdx];
   if (candidate === null && summaryObject && typeof summaryObject === "object") {
     const key = Object.keys(summaryObject).find((k) => k.toUpperCase() === "FULL_AMOUNT");
     if (key) {
@@ -371,12 +391,28 @@ function pickFullAmount(payload, fallbackRange) {
     throw err;
   }
 
+  const normalizedStart = normalizeDateString(rsStartDate);
+  const normalizedEnd = normalizeDateString(rsEndDate);
   const rawSummary = summaryRow || summaryObject || null;
-  return { total, rsStartDate, rsEndDate, rawSummary };
+  return { total, rsStartDate: normalizedStart, rsEndDate: normalizedEnd, rawSummary };
+}
+
+function normalizeDateString(value) {
+  if (typeof value !== "string") return "";
+  const match = value.match(/(\d{4})[-/.](\d{2})[-/.](\d{2})/);
+  if (match) {
+    return `${match[1]}-${match[2]}-${match[3]}`;
+  }
+  const parsed = new Date(value.replace(" ", "T"));
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  return formatIso(parsed);
 }
 
 function shouldRetry(err) {
   if (err instanceof RsSessionError) return false;
+  if (err instanceof RsHtmlResponseError) return false;
   const status = err?.statusCode || err?.response?.status;
   if (status && status >= 500) return true;
   const code = err?.code ? String(err.code) : "";
@@ -462,4 +498,5 @@ module.exports = {
   RsParseError,
   RsSchemaChangedError,
   RsSessionError,
+  RsHtmlResponseError,
 };

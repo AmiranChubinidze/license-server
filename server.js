@@ -14,6 +14,7 @@ const {
   RsParseError,
   RsSchemaChangedError,
   RsSessionError,
+  RsHtmlResponseError,
 } = require("./rsGridClient");
 
 const app = express();
@@ -443,7 +444,7 @@ function mapRsGridError(err) {
   }
   if (err instanceof RsSchemaChangedError) {
     return {
-      status: 500,
+      status: 502,
       code: "rs_schema_changed",
       message: "RS.ge response format changed. Please contact support.",
     };
@@ -453,6 +454,13 @@ function mapRsGridError(err) {
       status: 502,
       code: "rs_parse",
       message: "Failed to parse RS.ge response",
+    };
+  }
+  if (err instanceof RsHtmlResponseError) {
+    return {
+      status: 503,
+      code: "rs_html",
+      message: "RS.ge returned HTML instead of JSON. Please retry.",
     };
   }
   return {
@@ -2006,8 +2014,20 @@ app.post("/waybill/total", async (req, res) => {
   }
 });
 
+// Returns RS.ge UI-equivalent total (FULL_AMOUNT from GrdWaybills SummaryRow).
+// strict-total currently aliases grid-total for backwards compatibility.
 app.get("/api/rs/waybills/strict-total", async (req, res) => {
   if (!ensureSupabase(res)) return;
+  return handleRsGridTotalRequest(req, res);
+});
+
+// Primary endpoint for RS.ge UI-equivalent total (FULL_AMOUNT from GrdWaybills SummaryRow).
+app.get("/api/rs/waybills/grid-total", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  return handleRsGridTotalRequest(req, res);
+});
+
+async function handleRsGridTotalRequest(req, res) {
   const token = extractToken(req);
   const year = Number(req.query?.year);
   const month = Number(req.query?.month);
@@ -2030,6 +2050,11 @@ app.get("/api/rs/waybills/strict-total", async (req, res) => {
       return res.status(401).json({ success: false, message: "Missing SP for user" });
     }
 
+    console.log("[RS][grid-total] Requesting grid total", {
+      su: user.su,
+      year,
+      month,
+    });
     const result = await fetchRsGridTotalForMonth({
       su: user.su,
       sp: effectiveSp,
@@ -2037,11 +2062,13 @@ app.get("/api/rs/waybills/strict-total", async (req, res) => {
       month,
     });
     const totalValue = Number.isFinite(result.total) ? Number(result.total) : 0;
-    console.log(
-      `[RS_GRID_TOTAL] su=${user.su} year=${year} month=${month} rsRange=${result.rsStartDate}..${result.rsEndDate} total=${Number(
-        totalValue.toFixed(2)
-      )}`
-    );
+    console.log("[RS][grid-total] RS returned total", {
+      year,
+      month,
+      total: Number(totalValue.toFixed(2)),
+      rsStartDate: result.rsStartDate,
+      rsEndDate: result.rsEndDate,
+    });
     return res.json({
       success: true,
       total: Number(totalValue.toFixed(2)),
@@ -2057,14 +2084,14 @@ app.get("/api/rs/waybills/strict-total", async (req, res) => {
       return res.status(401).json({ success: false, message: "Invalid or expired token" });
     }
     const mapped = mapRsGridError(err);
-    console.error(`[RS_GRID_TOTAL] Failed for ${user?.su || "unknown"}:`, err?.message || err);
+    console.error("[RS][grid-total] Error:", err?.message || err);
     return res.status(mapped.status).json({
       success: false,
       code: mapped.code,
       message: mapped.message,
     });
   }
-});
+}
 
 app.get("/admin/users", requireAdmin, async (req, res) => {
   if (!ensureSupabase(res)) return;

@@ -1,0 +1,869 @@
+{
+	"info": {
+		"_postman_id": "97df8b7a-0c82-4b39-b907-169e7097959e",
+		"name": "Waybill - Production-",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "7681326"
+	},
+	"item": [
+		{
+			"name": "get_error_codes",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/get_error_codes\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <get_error_codes xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n    </get_error_codes>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_error_codes",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "get_error_codes"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "get_service_users",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/get_service_users\"",
+						"type": "text"
+					},
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <get_service_users xmlns=\"http://tempuri.org/\">\r\n      <user_name>tbilisi</user_name>\r\n      <user_password>123456</user_password>\r\n    </get_service_users>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_service_users",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "get_service_users"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "get_name_from_tin",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/get_name_from_tin\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <get_name_from_tin xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n      <tin>12345678910</tin>\r\n    </get_name_from_tin>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_name_from_tin",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "get_name_from_tin"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "get_akciz_codes",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/get_akciz_codes\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <get_akciz_codes xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n    </get_akciz_codes>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_akciz_codes",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "get_akciz_codes"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "get_akciz_codes  with s_text",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/get_akciz_codes\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <get_akciz_codes xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n      <s_text>ვისკი</s_text>\r\n    </get_akciz_codes>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_akciz_codes",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "get_akciz_codes"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "get_waybill",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/get_waybill\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <get_waybill xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n      <waybill_id>601759104</waybill_id>\r\n    </get_waybill>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_waybill",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "get_waybill"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "get_waybills",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/get_waybills\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <get_waybills xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n      <itypes>2</itypes>\r\n      <buyer_tin>12345678910</buyer_tin>\r\n    </get_waybills>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_waybills",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "get_waybills"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "get_buyer_waybills",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/get_buyer_waybills\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <get_buyer_waybills xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n      <itypes>2</itypes>\r\n      <buyer_tin>12345678910</buyer_tin>\r\n    </get_buyer_waybills>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_buyer_waybills",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "get_buyer_waybills"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "chek_service_user",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/chek_service_user\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <chek_service_user xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n    </chek_service_user>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=chek_service_user",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "chek_service_user"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "save_waybill",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/save_waybill\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n    <soap:Body>\n        <save_waybill xmlns=\"http://tempuri.org/\">\n            <su>itana:206322102</su>\n            <sp>123456</sp>\n            <waybill>\n                <WAYBILL>\n                    <SUB_WAYBILLS></SUB_WAYBILLS>\n                    <GOODS_LIST>\n                        <GOODS>\n                            <ID>0</ID>\n                            <W_NAME>ფარი უნივერსალური Техно ST120 1.2х3.0</W_NAME>\n                            <UNIT_ID>1</UNIT_ID>\n                            <UNIT_TXT></UNIT_TXT>\n                            <QUANTITY>2</QUANTITY>\n                            <PRICE>1</PRICE>\n                            <STATUS>1</STATUS>\n                            <AMOUNT>2</AMOUNT>\n                            <BAR_CODE>999906ძ</BAR_CODE>\n                            <A_ID>0</A_ID>\n                            <VAT_TYPE>0</VAT_TYPE>\n                        </GOODS>\n                        <GOODS>\n                            <ID>0</ID>\n                            <W_NAME>ფარი უნივერსალური Техно ST120 0.95х3.0</W_NAME>\n                            <UNIT_ID>1</UNIT_ID>\n                            <UNIT_TXT></UNIT_TXT>\n                            <QUANTITY>1</QUANTITY>\n                            <PRICE>2</PRICE>\n                            <STATUS>1</STATUS>\n                            <AMOUNT>2</AMOUNT>\n                            <BAR_CODE>999908ძ</BAR_CODE>\n                            <A_ID>0</A_ID>\n                            <VAT_TYPE>0</VAT_TYPE>\n                        </GOODS>\n                    </GOODS_LIST>\n                    <ID>0</ID>\n                    <TYPE>2</TYPE>\n                    <BUYER_TIN>12345678910</BUYER_TIN>\n                    <CHEK_BUYER_TIN>1</CHEK_BUYER_TIN>\n                    <BUYER_NAME>შპს რემმშენი</BUYER_NAME>\n                    <START_ADDRESS>აგლაძის ქ. 32</START_ADDRESS>\n                    <END_ADDRESS>ჯავახეთის ქ.12a</END_ADDRESS>\n                    <DRIVER_TIN>12345678910</DRIVER_TIN>\n                    <CHEK_DRIVER_TIN>1</CHEK_DRIVER_TIN>\n                    <DRIVER_NAME>Revazi</DRIVER_NAME>\n                    <TRANSPORT_COAST>1000</TRANSPORT_COAST>\n                    <RECEPTION_INFO></RECEPTION_INFO>\n                    <RECEIVER_INFO></RECEIVER_INFO>\n                    <DELIVERY_DATE></DELIVERY_DATE>\n                    <STATUS>0</STATUS>\n                    <SELER_UN_ID>731937</SELER_UN_ID>\n                    <PAR_ID></PAR_ID>\n                    <FULL_AMOUNT>4</FULL_AMOUNT>\n                    <CAR_NUMBER>ADA123</CAR_NUMBER>\n                    <WAYBILL_NUMBER></WAYBILL_NUMBER>\n                    <S_USER_ID>783</S_USER_ID>\n                    <BEGIN_DATE>2021-02-09T18:13:59</BEGIN_DATE>\n                    <TRAN_COST_PAYER>2</TRAN_COST_PAYER>\n                    <TRANS_ID>1</TRANS_ID>\n                    <TRANS_TXT></TRANS_TXT>\n                    <COMMENT>manqana 1</COMMENT>\n                    <CATEGORY></CATEGORY>\n                </WAYBILL>\n            </waybill>\n        </save_waybill>\n    </soap:Body>\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=save_waybill",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "save_waybill"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "save_waybill ქვე-ზედნადები",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/save_waybill\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n    <soap:Body>\n        <save_waybill xmlns=\"http://tempuri.org/\">\n            <su>itana:206322102</su>\n            <sp>123456</sp>\n            <waybill>\n                <WAYBILL>\n                    <SUB_WAYBILLS/>\n                    <GOODS_LIST>\n                        <GOODS>\n                            <ID>0</ID>\n                            <W_NAME>ღვინის ნაკრები ESSENTIALS SPECIAL EDITION</W_NAME>\n                            <UNIT_ID>1</UNIT_ID>\n                            <UNIT_TXT>ცალი</UNIT_TXT>\n                            <QUANTITY>212</QUANTITY>\n                            <PRICE>15</PRICE>\n                            <AMOUNT>3180</AMOUNT>\n                            <BAR_CODE>(blank)3435</BAR_CODE>\n                            <VAT_TYPE>0</VAT_TYPE>\n                        </GOODS>\n                    </GOODS_LIST>\n                    <ID>0</ID>\n                    <TYPE>6</TYPE>\n                    <BUYER_TIN>12345678910</BUYER_TIN>\n                    <CHEK_BUYER_TIN>1</CHEK_BUYER_TIN>\n                    <BUYER_NAME>საქართველო</BUYER_NAME>\n                    <START_ADDRESS/>\n                    <END_ADDRESS>ქ. თბილისი, უზნაძის ქ. 4</END_ADDRESS>\n                    <DRIVER_TIN>12345678910</DRIVER_TIN>\n                    <CHEK_DRIVER_TIN>1</CHEK_DRIVER_TIN>\n                    <DRIVER_NAME>გიორგი მჭედლიშვილი</DRIVER_NAME>\n                    <TRANSPORT_COAST>0</TRANSPORT_COAST>\n                    <RECEPTION_INFO/>\n                    <RECEIVER_INFO/>\n                    <DELIVERY_DATE/>\n                    <STATUS>0</STATUS>\n                    <SELER_UN_ID>731937</SELER_UN_ID>\n                    <PAR_ID>516806628</PAR_ID>\n                    <FULL_AMOUNT>392</FULL_AMOUNT>\n                    <CAR_NUMBER>ABC123</CAR_NUMBER>\n                    <WAYBILL_NUMBER/>\n                    <S_USER_ID>200313</S_USER_ID>\n                    <BEGIN_DATE>2019-11-08T22:52:38</BEGIN_DATE>\n                    <TRAN_COST_PAYER/>\n                    <TRANS_ID>1</TRANS_ID>\n                    <TRANS_TXT/>\n                    <COMMENT/>\n                </WAYBILL>\n            </waybill>\n        </save_waybill>\n    </soap:Body>\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=save_waybill",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "save_waybill"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "save_waybill დასრულებული ზედნადების კორექტირება",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/save_waybill\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n    <soap:Body>\n        <save_waybill xmlns=\"http://tempuri.org/\">\n            <su>itana:206322102</su>\n            <sp>123456</sp>\n            <waybill>\n                <WAYBILL>\n                    <SUB_WAYBILLS></SUB_WAYBILLS>\n                    <GOODS_LIST>\n                        <GOODS>\n                            <ID>0</ID>\n                            <W_NAME>სახელი</W_NAME>\n                            <UNIT_ID>1</UNIT_ID>\n                            <UNIT_TXT>ცალი</UNIT_TXT>\n                            <QUANTITY>1</QUANTITY>\n                            <PRICE>400</PRICE>\n                            <AMOUNT>300</AMOUNT>\n                            <BAR_CODE>123123123</BAR_CODE>\n                            <A_ID>0</A_ID>\n                        </GOODS>\n                    </GOODS_LIST>\n                    <ID>526711555</ID>\n                    <TYPE>2</TYPE>\n                    <BUYER_TIN>12345678910</BUYER_TIN>\n                    <CHEK_BUYER_TIN>1</CHEK_BUYER_TIN>\n                    <BUYER_NAME>სატესტოk სატესტოk</BUYER_NAME>\n                    <START_ADDRESS>თბილისი, რ.აგლაძის 45</START_ADDRESS>\n                    <END_ADDRESS>ძველი თბილისის (ყოფ.მთაწმ) რაიონი / აბაშიძის 1</END_ADDRESS>\n                    <DRIVER_TIN>12345678910</DRIVER_TIN>\n                    <CHEK_DRIVER_TIN>1</CHEK_DRIVER_TIN>\n                    <DRIVER_NAME>სატესტოk სატესტოk</DRIVER_NAME>\n                    <TRANSPORT_COAST></TRANSPORT_COAST>\n                    <TRANSPORTER_TIN></TRANSPORTER_TIN>\n                    <RECEPTION_INFO />\n                    <RECEIVER_INFO />\n                    <DELIVERY_DATE>2019-12-26T13:16:41</DELIVERY_DATE>\n                    <STATUS>2</STATUS>\n                    <SELER_UN_ID>731937</SELER_UN_ID>\n                    <PAR_ID>-1</PAR_ID>\n                    <CAR_NUMBER>AA123BB</CAR_NUMBER>\n                    <BEGIN_DATE />\n                    <TRAN_COST_PAYER>2</TRAN_COST_PAYER>\n                    <TRANS_ID>1</TRANS_ID>\n                    <TRANS_TXT>1</TRANS_TXT>\n                    <COMMENT />\n                </WAYBILL>\n            </waybill>\n        </save_waybill>\n    </soap:Body>\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=save_waybill",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "save_waybill"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "save_waybill გადამზიდავის ტიპის ტრანსპორტირება",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/save_waybill\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n    <soap:Body>\n        <save_waybill xmlns=\"http://tempuri.org/\">\n            <su>itgigi:206322102</su>\n            <sp>123456</sp>\n            <waybill>\n                <WAYBILL>\n                    <ID>0</ID>\n                    <TYPE>2</TYPE>\n                    <BUYER_TIN>12345678910</BUYER_TIN>\n                    <CHEK_BUYER_TIN>1</CHEK_BUYER_TIN>\n                    <BUYER_NAME>სატესტოk სატესტოk</BUYER_NAME>\n                    <START_ADDRESS>თბილისი, რ.აგლაძის 45</START_ADDRESS>\n                    <END_ADDRESS>ძველი თბილისის (ყოფ.მთაწმ) რაიონი / აბაშიძის 1</END_ADDRESS>\n                    <DRIVER_TIN></DRIVER_TIN>\n                    <CHEK_DRIVER_TIN></CHEK_DRIVER_TIN>\n                    <DRIVER_NAME></DRIVER_NAME>\n                    <TRANSPORT_COAST></TRANSPORT_COAST>\n                    <TRANSPORTER_TIN>12345678910</TRANSPORTER_TIN>\n                    <RECEPTION_INFO />\n                    <RECEIVER_INFO />\n                    <DELIVERY_DATE>2019-12-26T13:16:41</DELIVERY_DATE>\n                    <STATUS>8</STATUS>\n                    <SELER_UN_ID>731937</SELER_UN_ID>\n                    <PAR_ID>-1</PAR_ID>\n                    <CAR_NUMBER></CAR_NUMBER>\n                    <BEGIN_DATE />\n                    <TRAN_COST_PAYER>2</TRAN_COST_PAYER>\n                    <TRANS_ID>7</TRANS_ID>\n                    <TRANS_TXT></TRANS_TXT>\n                    <COMMENT />\n                    <GOODS_LIST>\n                        <GOODS>\n                            <ID>0</ID>\n                            <W_NAME>ღვინის ნაკრები ESSENTIALS SPECIAL EDITION</W_NAME>\n                            <UNIT_ID>1</UNIT_ID>\n                            <UNIT_TXT>ცალი</UNIT_TXT>\n                            <QUANTITY>212</QUANTITY>\n                            <PRICE>15</PRICE>\n                            <AMOUNT>3180</AMOUNT>\n                            <BAR_CODE>(blank)3435</BAR_CODE>\n                            <VAT_TYPE>0</VAT_TYPE>\n                        </GOODS>\n                    </GOODS_LIST>\n                </WAYBILL>\n            </waybill>\n        </save_waybill>\n    </soap:Body>\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=save_waybill",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "save_waybill"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "send_waybill",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/send_waybill\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n    <soap:Body>\n        <send_waybill xmlns=\"http://tempuri.org/\">\n            <su>itana:206322102</su>\n            <sp>123456</sp>\n\t\t\t<waybill_id>555383719</waybill_id>\n        </send_waybill>\n    </soap:Body>\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=send_waybill",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "send_waybill"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "save_invoice",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/save_invoice\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <save_invoice xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n      <waybill_id>503880555</waybill_id>\r\n      <in_inv_id>0</in_inv_id>\r\n    </save_invoice>\r\n  </soap:Body>\r\n</soap:Envelope>\r\n"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=save_invoice",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "save_invoice"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "close_waybill",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/close_waybill\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <close_waybill xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n      <waybill_id>517023796</waybill_id>\r\n    </close_waybill>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=close_waybill",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "close_waybill"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "confirm_waybill",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/confirm_waybill\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <confirm_waybill xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n      <waybill_id>517023796</waybill_id>\r\n    </confirm_waybill>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=confirm_waybill",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "confirm_waybill"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "reject_waybill",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/reject_waybill\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <reject_waybill xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n      <waybill_id>629850677</waybill_id>\r\n    </reject_waybill>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=reject_waybill",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "reject_waybill"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "get_waybill_types",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/get_waybill_types\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <get_waybill_types xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n    </get_waybill_types>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_waybill_types",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "get_waybill_types"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "get_waybills_v1",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"name": "Content-Type",
+						"value": "text/xml; charset=UTF-8",
+						"type": "text"
+					},
+					{
+						"key": "SOAPAction",
+						"value": "\"http://tempuri.org/get_waybills_v1\"",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\r\n  <soap:Body>\r\n    <get_waybills_v1 xmlns=\"http://tempuri.org/\">\r\n      <su>itana:206322102</su>\r\n      <sp>123456</sp>\r\n      <buyer_tin>12345678910</buyer_tin>\r\n      <last_update_date_s>2023-08-12</last_update_date_s>\r\n      <last_update_date_e>2023-08-15</last_update_date_e>\r\n\r\n    </get_waybills_v1>\r\n  </soap:Body>\r\n</soap:Envelope>"
+				},
+				"url": {
+					"raw": "https://services.rs.ge/WayBillService/WayBillService.asmx?op=get_waybills_v1",
+					"protocol": "https",
+					"host": [
+						"services",
+						"rs",
+						"ge"
+					],
+					"path": [
+						"WayBillService",
+						"WayBillService.asmx"
+					],
+					"query": [
+						{
+							"key": "op",
+							"value": "get_waybills_v1"
+						}
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}
