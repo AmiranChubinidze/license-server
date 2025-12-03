@@ -539,11 +539,15 @@ const MAX_SOAP_WINDOW_DAYS = 3;
 
 async function fetchWaybillTotal(credentials, monthKey, options = {}) {
   const captureLists = Boolean(options.captureLists);
+  const captureStageTotals = Boolean(options.captureStageTotals);
   const baseFilterConfig = options.filterConfig || BASE_WAYBILL_FILTER_CONFIG;
   const filterConfig =
     captureLists && !baseFilterConfig.captureLists
       ? { ...baseFilterConfig, captureLists: true }
       : baseFilterConfig;
+  const effectiveFilterConfig = captureStageTotals
+    ? { ...filterConfig, captureStageTotals: true }
+    : filterConfig;
   const range = buildDateRange(monthKey);
   const rangeDays = countDaysInclusive(range);
   if (rangeDays > MAX_SOAP_WINDOW_DAYS) {
@@ -553,8 +557,9 @@ async function fetchWaybillTotal(credentials, monthKey, options = {}) {
     return await fetchWaybillTotalInChunks(credentials, range, {
       windowDays: MAX_SOAP_WINDOW_DAYS,
       targetRange: range,
-      filterConfig,
+      filterConfig: effectiveFilterConfig,
       captureLists,
+      captureStageTotals,
     });
   }
   try {
@@ -563,7 +568,7 @@ async function fetchWaybillTotal(credentials, monthKey, options = {}) {
       xml,
       credentials.su,
       range,
-      filterConfig
+      effectiveFilterConfig
     );
     logWaybillSummary(summary);
     return summary;
@@ -707,14 +712,20 @@ async function summarizeWaybillTotalsFromXml(
   const processed = records.length;
 
   if (!processed) {
+    const emptyStages = filterConfig.captureStageTotals ? initEmptyStageTotals() : undefined;
     return {
       total: 0,
       included: 0,
       excluded: 0,
       processed: 0,
       message: "No waybills found",
+      ...(emptyStages ? { stageTotals: emptyStages } : {}),
     };
   }
+
+  const stageTotals = filterConfig.captureStageTotals
+    ? computeStageTotals(records, filterConfig, targetRange)
+    : null;
 
   const filtered = filterWaybillRecords(records, filterConfig, targetRange, {
     captureLists: Boolean(filterConfig.captureLists),
@@ -726,6 +737,9 @@ async function summarizeWaybillTotalsFromXml(
     processed,
     message: "OK",
   };
+  if (stageTotals) {
+    summary.stageTotals = stageTotals;
+  }
 
   if (filtered.logs?.length) {
     summary.logs = filtered.logs;
@@ -746,6 +760,21 @@ function logWaybillSummary(summary) {
   console.log(
     `[WAYBILL_SUMMARY] Total count: ${processed} | Included: ${included} | Excluded: ${excluded} | Total: ${total}`
   );
+}
+
+function logStageTotals(monthKey, stageTotals) {
+  if (!stageTotals) return;
+  const label = `${monthKey}`;
+  const line = (name) => {
+    const entry = stageTotals[name] || { count: 0, sum: 0 };
+    return `${name}: ${entry.count} / ${Number(entry.sum || 0).toFixed(2)}`;
+  };
+  console.log(`[SOAP][debug] ${label} ${line("RAW")}`);
+  console.log(`[SOAP][debug] ${label} ${line("SELLER_ONLY")}`);
+  console.log(`[SOAP][debug] ${label} ${line("STATUS_TYPE")}`);
+  console.log(`[SOAP][debug] ${label} ${line("CORRECTIONS")}`);
+  console.log(`[SOAP][debug] ${label} ${line("INTERNAL_TRANSFERS")}`);
+  console.log(`[SOAP][debug] ${label} ${line("DATE_FILTER")}`);
 }
 
 function extractWaybillDatasetXml(xml) {
@@ -917,6 +946,131 @@ function filterWaybillRecords(records, config, targetRange, options = {}) {
     includedRecords: captureLists ? included : undefined,
     excludedRecords: captureLists ? excluded : undefined,
   };
+}
+
+function initEmptyStageTotals() {
+  return {
+    RAW: { count: 0, sum: 0 },
+    SELLER_ONLY: { count: 0, sum: 0 },
+    STATUS_TYPE: { count: 0, sum: 0 },
+    CORRECTIONS: { count: 0, sum: 0 },
+    INTERNAL_TRANSFERS: { count: 0, sum: 0 },
+    DATE_FILTER: { count: 0, sum: 0 },
+  };
+}
+
+function mergeStageTotals(base, incoming) {
+  const output = base ? { ...base } : initEmptyStageTotals();
+  if (!incoming) return output;
+  for (const key of Object.keys(output)) {
+    const current = output[key] || { count: 0, sum: 0 };
+    const next = incoming[key] || { count: 0, sum: 0 };
+    output[key] = {
+      count: Number(current.count || 0) + Number(next.count || 0),
+      sum: Number(current.sum || 0) + Number(next.sum || 0),
+    };
+  }
+  return output;
+}
+
+function computeStageTotals(records, config, targetRange) {
+  const stages = initEmptyStageTotals();
+  const sumFor = (arr) => {
+    let sum = 0;
+    for (const record of arr) {
+      const amount = normalizeFullAmount(record);
+      if (Number.isFinite(amount)) {
+        sum += amount;
+      }
+    }
+    return Number(sum.toFixed(2));
+  };
+
+  const setStage = (key, arr) => {
+    stages[key] = {
+      count: Array.isArray(arr) ? arr.length : 0,
+      sum: sumFor(arr || []),
+    };
+  };
+
+  const raw = Array.isArray(records) ? records : [];
+  setStage("RAW", raw);
+
+  const sellerFiltered = applySellerFilter(raw, config);
+  setStage("SELLER_ONLY", sellerFiltered);
+
+  const statusTypeFiltered = applyStatusTypeFilter(sellerFiltered);
+  setStage("STATUS_TYPE", statusTypeFiltered);
+
+  const correctionsFiltered = applyCorrectionsFilter(statusTypeFiltered);
+  setStage("CORRECTIONS", correctionsFiltered);
+
+  const internalFiltered = applyInternalTransferFilter(correctionsFiltered);
+  setStage("INTERNAL_TRANSFERS", internalFiltered);
+
+  const dateFiltered = applyDateFilter(internalFiltered, targetRange);
+  setStage("DATE_FILTER", dateFiltered);
+
+  return stages;
+}
+
+function applySellerFilter(records, config) {
+  const myTin = normalizeTin(config?.myTin || "");
+  if (!myTin) return records;
+  return records.filter((record) => {
+    const sellerTin = normalizeTin(getFirstValue(record, WAYBILL_SELLER_TIN_KEYS));
+    return sellerTin && sellerTin === myTin;
+  });
+}
+
+function applyStatusTypeFilter(records) {
+  return records.filter((record) => {
+    const status = normalizeStatus(getFirstValue(record, ["STATUS"]));
+    const type = normalizeType(getFirstValue(record, ["TYPE"]));
+    if (!WAYBILL_ALLOWED_STATUSES.has(status)) {
+      return false;
+    }
+    if (type === "6") {
+      return false;
+    }
+    if (WAYBILL_EXPECTED_TYPE && type && type !== WAYBILL_EXPECTED_TYPE) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function applyCorrectionsFilter(records) {
+  const { parentToChildId } = buildCorrectionIndex(records);
+  if (!parentToChildId || !parentToChildId.size) {
+    return records;
+  }
+  const parentsToDrop = new Set(parentToChildId.keys());
+  return records.filter((record) => {
+    const id = resolveWaybillId(record);
+    if (!id) return true;
+    return !parentsToDrop.has(id);
+  });
+}
+
+function applyInternalTransferFilter(records) {
+  return records.filter((record) => {
+    const sellerTin = normalizeTin(getFirstValue(record, WAYBILL_SELLER_TIN_KEYS));
+    const buyerTin = normalizeTin(getFirstValue(record, WAYBILL_BUYER_TIN_KEYS));
+    if (!sellerTin || !buyerTin) return true;
+    return sellerTin !== buyerTin;
+  });
+}
+
+function applyDateFilter(records, targetRange) {
+  if (!targetRange?.start || !targetRange?.end) {
+    return records;
+  }
+  return records.filter((record) => {
+    const begin = normalizeWaybillDate(getFirstValue(record, [WAYBILL_DATE_SOURCE]));
+    if (!begin) return false;
+    return begin >= targetRange.start && begin <= targetRange.end;
+  });
 }
 
 function buildCorrectionIndex(records) {
@@ -1259,10 +1413,14 @@ async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
   const targetRange = options.targetRange || range;
   const baseFilterConfig = options.filterConfig || BASE_WAYBILL_FILTER_CONFIG;
   const captureLists = Boolean(options.captureLists);
+  const captureStageTotals = Boolean(options.captureStageTotals);
   const filterConfig =
     captureLists && !baseFilterConfig.captureLists
       ? { ...baseFilterConfig, captureLists: true }
       : baseFilterConfig;
+  const effectiveFilterConfig = captureStageTotals
+    ? { ...filterConfig, captureStageTotals: true }
+    : filterConfig;
   const segments = chunkDateRange(range, windowDays);
   if (!segments.length) {
     const emptySummary = {
@@ -1285,6 +1443,7 @@ async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
   let combinedProcessed = 0;
   const combinedIncludedRecords = captureLists ? [] : null;
   const combinedExcludedRecords = captureLists ? [] : null;
+  let combinedStageTotals = captureStageTotals ? initEmptyStageTotals() : null;
 
   for (const segment of segments) {
     try {
@@ -1293,13 +1452,16 @@ async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
         xml,
         credentials.su,
         targetRange,
-        filterConfig
+        effectiveFilterConfig
       );
       if (captureLists && summary.includedRecords?.length) {
         combinedIncludedRecords.push(...summary.includedRecords);
       }
       if (captureLists && summary.excludedRecords?.length) {
         combinedExcludedRecords.push(...summary.excludedRecords);
+      }
+      if (captureStageTotals && summary.stageTotals) {
+        combinedStageTotals = mergeStageTotals(combinedStageTotals, summary.stageTotals);
       }
       combinedTotal += Number(summary.total) || 0;
       combinedIncluded += Number(summary.included) || 0;
@@ -1324,14 +1486,18 @@ async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
         const nested = await fetchWaybillTotalInChunks(credentials, segment, {
           windowDays: nextWindow,
           targetRange,
-          filterConfig,
+          filterConfig: effectiveFilterConfig,
           captureLists,
+          captureStageTotals,
         });
         if (captureLists && nested.includedRecords?.length) {
           combinedIncludedRecords.push(...nested.includedRecords);
         }
         if (captureLists && nested.excludedRecords?.length) {
           combinedExcludedRecords.push(...nested.excludedRecords);
+        }
+        if (captureStageTotals && nested.stageTotals) {
+          combinedStageTotals = mergeStageTotals(combinedStageTotals, nested.stageTotals);
         }
         combinedTotal += Number(nested.total) || 0;
         combinedIncluded += Number(nested.included) || 0;
@@ -1359,6 +1525,9 @@ async function fetchWaybillTotalInChunks(credentials, range, options = {}) {
   if (captureLists) {
     finalSummary.includedRecords = combinedIncludedRecords || [];
     finalSummary.excludedRecords = combinedExcludedRecords || [];
+  }
+  if (captureStageTotals) {
+    finalSummary.stageTotals = combinedStageTotals || initEmptyStageTotals();
   }
   logWaybillSummary(finalSummary);
   return finalSummary;
@@ -1591,14 +1760,19 @@ app.get("/debug/waybills", async (req, res) => {
     const result = await fetchWaybillTotal(
       { su: user.su, sp: effectiveSp },
       monthKey,
-      { filterConfig, captureLists: true }
+      { filterConfig, captureLists: true, captureStageTotals: true }
     );
+
+    if (result.stageTotals) {
+      logStageTotals(monthKey, result.stageTotals);
+    }
 
     return res.json({
       success: true,
       included: result.includedRecords || [],
       excluded: result.excludedRecords || [],
       logs: result.logs || [],
+      stageTotals: result.stageTotals || initEmptyStageTotals(),
     });
   } catch (err) {
     if (err instanceof SoapDisabledError) {
@@ -1666,14 +1840,18 @@ function registerSoapRoutes(appInstance) {
       const result = await fetchWaybillTotal(
         { su: user.su, sp: effectiveSp },
         monthKey,
-        { filterConfig, captureLists: true }
+        { filterConfig, captureLists: true, captureStageTotals: true }
       );
+      if (result.stageTotals) {
+        logStageTotals(monthKey, result.stageTotals);
+      }
 
       return res.json({
         success: true,
         included: result.includedRecords || [],
         excluded: result.excludedRecords || [],
         logs: result.logs || [],
+        stageTotals: result.stageTotals || initEmptyStageTotals(),
       });
     } catch (err) {
       if (err instanceof SoapDisabledError) {
@@ -1742,14 +1920,18 @@ function registerSoapRoutes(appInstance) {
       const result = await fetchWaybillTotal(
         { su: user.su, sp: effectiveSp },
         monthKey,
-        { filterConfig, captureLists: true }
+        { filterConfig, captureLists: true, captureStageTotals: true }
       );
+      if (result.stageTotals) {
+        logStageTotals(monthKey, result.stageTotals);
+      }
 
       return res.json({
         success: true,
         included: result.includedRecords || [],
         excluded: result.excludedRecords || [],
         logs: result.logs || [],
+        stageTotals: result.stageTotals || initEmptyStageTotals(),
       });
     } catch (err) {
       if (err instanceof SoapDisabledError) {
