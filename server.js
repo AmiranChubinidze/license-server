@@ -53,12 +53,13 @@ if (!supabase) {
 }
 const SERVICE_USERS_TABLE = "service_users";
 const LOGIN_REQUESTS_TABLE = "login_requests";
-const SOAP_DATE_KEYS = ["create_date", "last_update_date"];
+const SOAP_DATE_KEYS = ["last_update_date", "create_date"];
 const SOAP_DATE_KEY_OVERRIDE_RAW = process.env.SOAP_DATE_KEY;
 const SOAP_DATE_KEY_OVERRIDE = resolveSoapDateKeyOverride(SOAP_DATE_KEY_OVERRIDE_RAW);
-let soapDateKey = null;
+let soapDateKey = SOAP_DATE_KEY_OVERRIDE || null;
 const soapDisabledBySu = new Map();
-const ENABLE_SOAP_EXPERIMENTAL = String(process.env.ENABLE_SOAP_EXPERIMENTAL || "").toLowerCase() === "true";
+const ENABLE_SOAP_EXPERIMENTAL =
+  String(process.env.ENABLE_SOAP_EXPERIMENTAL || "").toLowerCase() !== "false";
 const WAYBILL_ALLOWED_STATUSES = new Set(["1", "2", "8", "-2"]);
 const WAYBILL_AMOUNT_FIELDS = ["FULL_AMOUNT"];
 const WAYBILL_EXPECTED_TYPE = "2";
@@ -264,9 +265,8 @@ async function listSupabaseUsers() {
 
 async function autodetectSoapDateKey() {
   if (SOAP_DATE_KEY_OVERRIDE) {
-    console.log(
-      `[SOAP] Using ${soapDateKey}_s/e from SOAP_DATE_KEY environment override`
-    );
+    soapDateKey = SOAP_DATE_KEY_OVERRIDE;
+    console.log(`[SOAP] Using ${soapDateKey}_s/e from SOAP_DATE_KEY environment override`);
     return;
   }
   if (!supabase) {
@@ -295,19 +295,19 @@ async function autodetectSoapDateKey() {
       try {
         const xml = await requestWaybillXml({ su: user.su, sp: user.plain_sp }, probeRange, key);
         const statusCode = extractSoapStatus(xml);
-        if (statusCode === -100) {
-          console.warn(`[SOAP] Probe with ${key}_s/e returned STATUS -100`);
+        if (statusCode === -100 || statusCode === -1072) {
+          console.warn(`[SOAP] Probe with ${key}_s/e returned STATUS ${statusCode}`);
           continue;
         }
         soapDateKey = key;
-        console.log(`[SOAP] Using ${soapDateKey}_s/e for all calls`);
+        console.log(`[SOAP] Autodetected date key ${soapDateKey}_s/e for SU ${user.su}`);
         return;
       } catch (err) {
         console.error(`[SOAP] Probe using ${key}_s/e failed:`, err?.message || err);
       }
     }
     soapDateKey = SOAP_DATE_KEYS[0];
-    console.warn("[SOAP] Autodetect failed; defaulting to create_date");
+    console.warn(`[SOAP] Autodetect failed; defaulting to ${soapDateKey}_s/e`);
   } catch (err) {
     console.error("[SOAP] Autodetect skipped due to error:", err?.message || err);
   }
@@ -1790,97 +1790,6 @@ app.get("/debug/waybills", async (req, res) => {
 
 function registerSoapRoutes(appInstance) {
   // dev/experimental SOAP routes (legacy/debug only)
-  appInstance.post("/waybill/total", async (req, res) => {
-    if (!ensureSupabase(res)) return;
-    const token = extractToken(req);
-    const month = req.body?.month;
-    const debugMode = parseBoolean(req.query?.debug);
-    let filterConfig = debugMode
-      ? buildWaybillFilterConfig({ debugLogs: true })
-      : BASE_WAYBILL_FILTER_CONFIG;
-    if (!token) {
-      return res.status(400).json({ success: false, message: "Missing token" });
-    }
-
-    let user;
-    try {
-      const decoded = decodeToken(token);
-      user = await findApprovedUser(decoded.su);
-
-      if (!user || !user.active) {
-        return res.status(401).json({ success: false, message: "User revoked or not found" });
-      }
-
-      const effectiveSp = (user.plain_sp || "").trim();
-      if (!effectiveSp) {
-        return res.status(401).json({ success: false, message: "Missing SP for user" });
-      }
-      const myTin = normalizeTin(user.tin);
-      if (!myTin) {
-        return res.status(400).json({ success: false, message: "TIN missing for user" });
-      }
-      filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
-
-      const result = await fetchWaybillTotal(
-        { su: user.su, sp: effectiveSp },
-        month,
-        { filterConfig }
-      );
-      if (result && typeof result === "object") {
-        const totalValue = Number.isFinite(result.total) ? Number(result.total) : 0;
-        const payload = {
-          success: true,
-          total: Number(totalValue.toFixed(2)),
-          included: Number.isFinite(result.included) ? result.included : 0,
-          excluded: Number.isFinite(result.excluded) ? result.excluded : 0,
-          message: result.message || "OK",
-        };
-        if (Array.isArray(result.logs) && result.logs.length) {
-          payload.logs = result.logs;
-        }
-        return res.json(payload);
-      }
-
-      const fallbackTotal = Number.isFinite(result) ? Number(result) : 0;
-      return res.json({
-        success: true,
-        total: Number(fallbackTotal.toFixed(2)),
-        included: 0,
-        excluded: 0,
-        message: "OK",
-      });
-    } catch (err) {
-      if (err instanceof SoapDisabledError) {
-        return res.status(503).json({
-          success: false,
-          code: "SOAP_DISABLED",
-          message:
-            "SOAP waybill service is not available for this account. Use grid totals instead.",
-        });
-      }
-      console.error("Waybill total failed:", err?.message || err);
-      if (err?.isSoapError) {
-        return res.status(502).json({
-          success: false,
-          message: "RS.ge SOAP error",
-          details: err.message || "SOAP request failed",
-        });
-      }
-
-      const isJwtError =
-        err?.name === "JsonWebTokenError" ||
-        err?.name === "TokenExpiredError" ||
-        err?.name === "NotBeforeError";
-      if (isJwtError) {
-        return res.status(401).json({ success: false, message: "Invalid or expired token" });
-      }
-
-      return res
-        .status(500)
-        .json({ success: false, message: err?.message || "Failed to calculate total" });
-    }
-  });
-
   appInstance.get("/waybill/debugList", async (req, res) => {
     if (!ensureSupabase(res)) return;
     const token = extractToken(req);
@@ -2124,42 +2033,109 @@ app.post("/validateToken", async (req, res) => {
   }
 });
 
+// Primary production endpoint: SOAP strict total for the given month.
+app.post("/waybill/total", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const token = extractToken(req);
+  const debugMode = parseBoolean(req.query?.debug);
+  let filterConfig = debugMode
+    ? buildWaybillFilterConfig({ debugLogs: true })
+    : BASE_WAYBILL_FILTER_CONFIG;
+
+  if (!token) {
+    return res.status(400).json({ success: false, message: "Missing token" });
+  }
+
+  // month can be provided as "YYYY-MM" or via year/month numeric fields
+  const bodyMonth = req.body?.month;
+  const bodyYear = req.body?.year;
+  let monthKey = typeof bodyMonth === "string" ? bodyMonth : undefined;
+  if (!monthKey && Number.isInteger(Number(bodyYear)) && Number.isInteger(Number(bodyMonth))) {
+    const paddedMonth = String(Number(bodyMonth)).padStart(2, "0");
+    monthKey = `${bodyYear}-${paddedMonth}`;
+  }
+  const range = buildDateRange(monthKey);
+
+  let user;
+  try {
+    const decoded = decodeToken(token);
+    user = await findApprovedUser(decoded.su);
+
+    if (!user || !user.active) {
+      return res.status(401).json({ success: false, message: "User revoked or not found" });
+    }
+
+    const effectiveSp = (user.plain_sp || "").trim();
+    if (!effectiveSp) {
+      return res.status(401).json({ success: false, message: "Missing SP for user" });
+    }
+    const myTin = normalizeTin(user.tin);
+    if (!myTin) {
+      return res.status(400).json({ success: false, message: "TIN missing for user" });
+    }
+    filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
+
+    const result = await fetchWaybillTotal(
+      { su: user.su, sp: effectiveSp },
+      monthKey,
+      { filterConfig }
+    );
+    const totalValue =
+      result && typeof result === "object" && Number.isFinite(result.total) ? result.total : 0;
+    return res.json({
+      success: true,
+      total: Number(totalValue.toFixed(2)),
+      from: range.start,
+      to: range.end,
+    });
+  } catch (err) {
+    if (err instanceof SoapDisabledError) {
+      return res.status(503).json({
+        success: false,
+        code: "SOAP_DISABLED",
+        message:
+          "SOAP waybill service is not available for this account. Use RS grid or manual reconciliation.",
+      });
+    }
+    if (err?.isSoapError) {
+      return res.status(502).json({
+        success: false,
+        message: "RS.ge SOAP error",
+        details: err.message || "SOAP request failed",
+      });
+    }
+
+    const isJwtError =
+      err?.name === "JsonWebTokenError" ||
+      err?.name === "TokenExpiredError" ||
+      err?.name === "NotBeforeError";
+    if (isJwtError) {
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
+
+    return res
+      .status(500)
+      .json({ success: false, message: err?.message || "Failed to calculate total" });
+  }
+});
+
 if (!ENABLE_SOAP_EXPERIMENTAL) {
-  console.log("[SOAP] Experimental SOAP routes are disabled (ENABLE_SOAP_EXPERIMENTAL=false)");
+  console.log("[SOAP] SOAP debug routes are disabled (ENABLE_SOAP_EXPERIMENTAL=false)");
 } else {
   registerSoapRoutes(app);
 }
 
-// Returns RS.ge UI-equivalent total (FULL_AMOUNT from GrdWaybills SummaryRow).
-// strict-total currently aliases grid-total for backwards compatibility.
+// DEV/DEBUG: Returns RS.ge UI-equivalent total (FULL_AMOUNT from GrdWaybills SummaryRow).
+// strict-total currently aliases grid-total for backwards compatibility. Not used in production flow.
 app.get("/api/rs/waybills/strict-total", async (req, res) => {
   if (!ensureSupabase(res)) return;
   return handleRsGridTotalRequest(req, res);
 });
 
-// Primary endpoint for RS.ge UI-equivalent total (FULL_AMOUNT from GrdWaybills SummaryRow).
+// DEV/DEBUG: Primary endpoint for RS.ge UI-equivalent total (FULL_AMOUNT from GrdWaybills SummaryRow).
+// Production strict totals use SOAP via /waybill/total.
 app.get("/api/rs/waybills/grid-total", async (req, res) => {
   if (!ensureSupabase(res)) return;
-  return handleRsGridTotalRequest(req, res);
-});
-
-// Compatibility alias for legacy clients: POST /waybill/total -> grid totals (no SOAP).
-app.post("/waybill/total", (req, res) => {
-  if (req.body?.year && !req.query.year) {
-    req.query.year = String(req.body.year);
-  }
-  if (req.body?.month && !req.query.month) {
-    const rawMonth = String(req.body.month);
-    if (/^\d{4}-\d{2}$/.test(rawMonth)) {
-      const [y, m] = rawMonth.split("-");
-      if (!req.query.year) {
-        req.query.year = y;
-      }
-      req.query.month = m;
-    } else {
-      req.query.month = rawMonth;
-    }
-  }
   return handleRsGridTotalRequest(req, res);
 });
 
