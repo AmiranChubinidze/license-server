@@ -566,6 +566,10 @@ function getAlternateSoapDateKey(key) {
   return SOAP_DATE_KEYS.find((entry) => entry !== key) || null;
 }
 
+function sanitizeSoapDateKey(key) {
+  return SOAP_DATE_KEYS.includes(key) ? key : SOAP_DATE_KEYS[0];
+}
+
 function shouldUseFallbackKey(err) {
   return err?.soapStatus === -1072;
 }
