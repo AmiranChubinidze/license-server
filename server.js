@@ -7,15 +7,6 @@ const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const xml2js = require("xml2js");
 const { supabase } = require("./supabaseClient");
-const {
-  fetchRsGridTotalForMonth,
-  RsAuthError,
-  RsHttpError,
-  RsParseError,
-  RsSchemaChangedError,
-  RsSessionError,
-  RsHtmlResponseError,
-} = require("./rsGridClient");
 
 const app = express();
 const allowedOrigins = [
@@ -419,57 +410,6 @@ function normalizeAmount(raw) {
   const cleaned = raw.replace(/\s+/g, "").replace(/,/g, ".").replace(/[^\d.-]/g, "");
   const value = Number.parseFloat(cleaned);
   return Number.isFinite(value) ? value : null;
-}
-
-function mapRsGridError(err) {
-  if (err instanceof RsAuthError) {
-    return {
-      status: 401,
-      code: "rs_auth",
-      message: "RS.ge authentication failed",
-    };
-  }
-  if (err instanceof RsSessionError) {
-    return {
-      status: 503,
-      code: "rs_session",
-      message: "RS.ge session expired. Please retry.",
-    };
-  }
-  if (err instanceof RsHttpError) {
-    const status = err.statusCode && err.statusCode >= 500 ? 502 : err.statusCode || 502;
-    return {
-      status,
-      code: "rs_http",
-      message: "RS.ge upstream unavailable",
-    };
-  }
-  if (err instanceof RsSchemaChangedError) {
-    return {
-      status: 502,
-      code: "rs_schema_changed",
-      message: "RS.ge response format changed. Please contact support.",
-    };
-  }
-  if (err instanceof RsParseError) {
-    return {
-      status: 502,
-      code: "rs_parse",
-      message: "Failed to parse RS.ge response",
-    };
-  }
-  if (err instanceof RsHtmlResponseError) {
-    return {
-      status: 503,
-      code: "rs_html",
-      message: "RS.ge returned HTML instead of JSON. Please retry.",
-    };
-  }
-  return {
-    status: 500,
-    code: "internal_error",
-    message: "Failed to fetch RS strict total",
-  };
 }
 
 function buildDateRange(monthKey) {
@@ -2119,100 +2059,8 @@ app.post("/waybill/total", async (req, res) => {
   }
 });
 
-if (!ENABLE_SOAP_EXPERIMENTAL) {
-  console.log("[SOAP] SOAP debug routes are disabled (ENABLE_SOAP_EXPERIMENTAL=false)");
-} else {
+if (ENABLE_SOAP_EXPERIMENTAL) {
   registerSoapRoutes(app);
-}
-
-// DEV/DEBUG: Returns RS.ge UI-equivalent total (FULL_AMOUNT from GrdWaybills SummaryRow).
-// strict-total currently aliases grid-total for backwards compatibility. Not used in production flow.
-app.get("/api/rs/waybills/strict-total", async (req, res) => {
-  if (!ensureSupabase(res)) return;
-  return handleRsGridTotalRequest(req, res);
-});
-
-// DEV/DEBUG: Primary endpoint for RS.ge UI-equivalent total (FULL_AMOUNT from GrdWaybills SummaryRow).
-// Production strict totals use SOAP via /waybill/total.
-app.get("/api/rs/waybills/grid-total", async (req, res) => {
-  if (!ensureSupabase(res)) return;
-  return handleRsGridTotalRequest(req, res);
-});
-
-async function handleRsGridTotalRequest(req, res) {
-  const token = extractToken(req);
-  const year = Number(req.query?.year);
-  const month = Number(req.query?.month);
-  if (!token) {
-    return res.status(400).json({ success: false, message: "Missing token" });
-  }
-  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
-    return res.status(400).json({ success: false, message: "Invalid year or month" });
-  }
-
-  let user;
-  try {
-    const decoded = decodeToken(token);
-    user = await findApprovedUser(decoded.su);
-    if (!user || !user.active) {
-      return res.status(401).json({ success: false, message: "User revoked or not found" });
-    }
-    const effectiveSp = (user.plain_sp || "").trim();
-    if (!effectiveSp) {
-      return res.status(401).json({ success: false, message: "Missing SP for user" });
-    }
-
-    console.log("[RS][grid-total] Requesting grid total", {
-      su: user.su,
-      year,
-      month,
-    });
-    const result = await fetchRsGridTotalForMonth({
-      su: user.su,
-      sp: effectiveSp,
-      year,
-      month,
-    });
-    const totalValue = Number.isFinite(result.total) ? Number(result.total) : 0;
-    console.log("[RS][grid-total] RS returned total", {
-      year,
-      month,
-      total: Number(totalValue.toFixed(2)),
-      rsStartDate: result.rsStartDate,
-      rsEndDate: result.rsEndDate,
-    });
-    return res.json({
-      success: true,
-      total: Number(totalValue.toFixed(2)),
-      rsStartDate: result.rsStartDate,
-      rsEndDate: result.rsEndDate,
-    });
-  } catch (err) {
-    const isJwtError =
-      err?.name === "JsonWebTokenError" ||
-      err?.name === "TokenExpiredError" ||
-      err?.name === "NotBeforeError";
-    if (isJwtError) {
-      return res.status(401).json({ success: false, message: "Invalid or expired token" });
-    }
-    if (err instanceof RsHtmlResponseError) {
-      console.error("[RS][grid-total][HTML]", {
-        message: err.message,
-        url: err.url,
-        statusCode: err.statusCode,
-        contentType: err.contentType,
-        dataType: err.dataType,
-        htmlSnippet: err.htmlSnippet,
-      });
-    }
-    const mapped = mapRsGridError(err);
-    console.error("[RS][grid-total] Error:", err?.message || err);
-    return res.status(mapped.status).json({
-      success: false,
-      code: mapped.code,
-      message: mapped.message,
-    });
-  }
 }
 
 app.get("/admin/users", requireAdmin, async (req, res) => {
