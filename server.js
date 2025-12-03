@@ -7,6 +7,15 @@ const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const xml2js = require("xml2js");
 const { supabase } = require("./supabaseClient");
+const {
+  fetchRsGridTotalForMonth,
+  RsAuthError,
+  RsHttpError,
+  RsParseError,
+  RsSchemaChangedError,
+  RsSessionError,
+  RsHtmlResponseError,
+} = require("./rsGridClient");
 
 const app = express();
 const allowedOrigins = [
@@ -1710,12 +1719,137 @@ async function handleAuthLogin(req, res) {
     });
   }
 }
+
+function mapRsGridError(err) {
+  if (err instanceof RsAuthError) {
+    return {
+      status: 401,
+      body: { success: false, code: "RS_AUTH", message: err.message || "RS authentication failed" },
+    };
+  }
+  if (err instanceof RsSessionError) {
+    return {
+      status: 502,
+      body: { success: false, code: "RS_SESSION", message: err.message || "RS session error" },
+    };
+  }
+  if (err instanceof RsHtmlResponseError) {
+    return {
+      status: 502,
+      body: {
+        success: false,
+        code: "RS_HTML",
+        message: "RS returned HTML instead of grid JSON. Try again later.",
+      },
+    };
+  }
+  if (err instanceof RsSchemaChangedError) {
+    return {
+      status: 502,
+      body: {
+        success: false,
+        code: "RS_SCHEMA_CHANGED",
+        message: err.message || "RS schema changed",
+      },
+    };
+  }
+  if (err instanceof RsHttpError) {
+    const status = err.statusCode && err.statusCode >= 500 ? 503 : 502;
+    return {
+      status,
+      body: { success: false, code: "RS_HTTP", message: err.message || "RS HTTP error" },
+    };
+  }
+  if (err instanceof RsParseError) {
+    return {
+      status: 500,
+      body: { success: false, code: "RS_PARSE_ERROR", message: err.message || "Parse error" },
+    };
+  }
+  return {
+    status: 500,
+    body: { success: false, code: "RS_UNKNOWN", message: err?.message || "Grid total failed" },
+  };
+}
+
+async function handleRsGridTotalRequest(req, res) {
+  if (!ensureSupabase(res)) return;
+  const token = extractToken(req);
+  const year = Number(req.query?.year);
+  const month = Number(req.query?.month);
+
+  if (!Number.isInteger(year) || year <= 2000 || !Number.isInteger(month) || month < 1 || month > 12) {
+    return res.status(400).json({ success: false, message: "Invalid year or month" });
+  }
+  if (!token) {
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  }
+
+  let su = null;
+  try {
+    const decoded = decodeToken(token);
+    su = decoded.su;
+    const user = await findApprovedUser(su);
+    if (!user || !user.active || user.status !== LOGIN_STATUSES.APPROVED) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+    const sp = (user.plain_sp || "").trim();
+    if (!sp) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    console.log("[RS][grid-total] Requesting grid total", { su, year, month });
+    const result = await fetchRsGridTotalForMonth({
+      su: user.su,
+      plain_sp: sp,
+      year,
+      month,
+    });
+    console.log("[RS][grid-total] RS returned total", {
+      su,
+      year,
+      month,
+      total: result.total,
+      rsStartDate: result.rsStartDate,
+      rsEndDate: result.rsEndDate,
+    });
+
+    return res.json({
+      success: true,
+      source: "rs_grid",
+      total: Number(result.total.toFixed(2)),
+      year,
+      month,
+      rsStartDate: result.rsStartDate,
+      rsEndDate: result.rsEndDate,
+    });
+  } catch (err) {
+    const isJwtError =
+      err?.name === "JsonWebTokenError" || err?.name === "TokenExpiredError" || err?.name === "NotBeforeError";
+    if (isJwtError) {
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
+
+    const mapped = mapRsGridError(err);
+    console.error("[RS][grid-total] Failed", {
+      su,
+      year,
+      month,
+      error: err?.name || "Error",
+      message: err?.message,
+    });
+    return res.status(mapped.status).json(mapped.body);
+  }
+}
 app.get("/ping", (_req, res) => res.json({ ok: true }));
 console.log("Loaded routes: /login, /verify, /refresh");
 app.post("/login", handleAuthLogin);
 app.post("/loginHybrid", handleAuthLogin);
 app.post("/auth", handleAuthLogin);
 app.post("/auth/login", handleAuthLogin);
+
+app.get("/api/rs/waybills/grid-total", handleRsGridTotalRequest);
+app.get("/api/rs/waybills/strict-total", handleRsGridTotalRequest);
 
 app.get("/debug/users", async (_req, res) => {
   if (!ensureSupabase(res)) return;

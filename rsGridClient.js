@@ -33,7 +33,35 @@ const RS_FILTER_FUNCS = {
   GreaterOrEqual: 13,
 };
 
-const STATUS_FILTER_VALUES = ["1", "2", "8", "-2"];
+const STATUS_FILTER_VALUES = ["1", "2", "8"];
+const STATUS_TEXT_FILTER_VALUES = ["აქტიური", "დასრულებული", "გადამზიდავთან გადაგზავნილი"];
+
+const GEORGIAN_MONTHS = {
+  იან: 1,
+  იანვ: 1,
+  თებ: 2,
+  თებრ: 2,
+  მარ: 3,
+  მარტ: 3,
+  აპრ: 4,
+  აპრილ: 4,
+  მაი: 5,
+  მაის: 5,
+  ივნ: 6,
+  ივნის: 6,
+  ივლ: 7,
+  ივლის: 7,
+  აგვ: 8,
+  აგვისტ: 8,
+  სექ: 9,
+  სექტ: 9,
+  ოქტ: 10,
+  ოქტომბ: 10,
+  ნოე: 11,
+  ნოემბ: 11,
+  დეკ: 12,
+  დეკემბ: 12,
+};
 
 class RsAuthError extends Error {
   constructor(message) {
@@ -98,7 +126,7 @@ class RsHtmlResponseError extends Error {
  * @property {number} total
  * @property {string} rsStartDate
  * @property {string} rsEndDate
- * @property {any} [rawSummary]
+ * @property {{ fieldIndex: number; fields: string[]; fromRs: string; rawSummary?: any }} [details]
  */
 
 function createHttpClient(jar) {
@@ -147,6 +175,8 @@ function extractPageSession(html) {
 
   const pageIdRegex = /PageID["']?\s*[:=]\s*["']([^"']+)["']/i;
   const sessionIdRegex = /SessionID["']?\s*[:=]\s*["']([^"']+)["']/i;
+  const pageIdJsonRegex = /"PageID"\s*:\s*"([^"']+)"/i;
+  const sessionIdJsonRegex = /"SessionID"\s*:\s*"([^"']+)"/i;
   const currentTabRegex = /currentTab["']?\s*[:=]\s*["']([^"']+)["']/i;
 
   let pageId = pageIdFromHidden || "";
@@ -160,8 +190,22 @@ function extractPageSession(html) {
     }
   }
 
+  if (!pageId && typeof html === "string") {
+    const m = html.match(pageIdJsonRegex);
+    if (m && m[1]) {
+      pageId = m[1];
+    }
+  }
+
   if (!sessionId) {
     const m = typeof html === "string" ? html.match(sessionIdRegex) : null;
+    if (m && m[1]) {
+      sessionId = m[1];
+    }
+  }
+
+  if (!sessionId && typeof html === "string") {
+    const m = html.match(sessionIdJsonRegex);
     if (m && m[1]) {
       sessionId = m[1];
     }
@@ -189,20 +233,15 @@ function setRsCookie(jar, name, value) {
 }
 
 function normalizeRsResponse(payload) {
-  if (
-    payload &&
-    typeof payload === "object" &&
-    Object.prototype.hasOwnProperty.call(payload, "d")
-  ) {
-    return payload.d;
+  if (payload && typeof payload === "object") {
+    if (Object.prototype.hasOwnProperty.call(payload, "d")) {
+      return payload.d;
+    }
+    return payload;
   }
   if (typeof payload === "string") {
-    try {
-      const parsed = JSON.parse(payload);
-      return normalizeRsResponse(parsed);
-    } catch (err) {
-      return null;
-    }
+    const parsed = safeJsonParse(payload);
+    return parsed ? normalizeRsResponse(parsed) : null;
   }
   return payload;
 }
@@ -233,6 +272,46 @@ function extractHtmlSnippet(body, limit = 300) {
   } catch (err) {
     return { snippet: "[unserializable response data]", dataType };
   }
+}
+
+function safeJsonParse(raw) {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "object") return raw;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().replace(/^\uFEFF/, "");
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch (err) {
+    return null;
+  }
+}
+
+function tryParseJsonOrObject(raw) {
+  if (raw && typeof raw === "object") return raw;
+  if (typeof raw === "string") {
+    const direct = safeJsonParse(raw);
+    if (direct) return direct;
+    const braceIdx = raw.indexOf("{");
+    if (braceIdx >= 0) {
+      const substring = raw.slice(braceIdx);
+      const nested = safeJsonParse(substring);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+function isProbablyLoginPage(html) {
+  if (typeof html !== "string") return false;
+  const lower = html.toLowerCase();
+  return (
+    lower.includes("login") ||
+    lower.includes("auth") ||
+    lower.includes("ავტორიზაცია") ||
+    lower.includes("username") ||
+    lower.includes("password")
+  );
 }
 
 function parseTinFromSu(su) {
@@ -295,37 +374,21 @@ async function createRsSession(su, sp) {
     (authResp.headers && (authResp.headers["content-type"] || authResp.headers["Content-Type"])) ||
     "";
 
+  if (authResp.status >= 500) {
+    throw new RsHttpError("RS authentication unavailable", authResp.status);
+  }
+
   let authBody = null;
-  if (typeof rawAuth === "string") {
-    const trimmed = rawAuth.trim();
-    if (trimmed.startsWith("{")) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        const normalized = normalizeRsResponse(parsed);
-        if (normalized && typeof normalized === "object") {
-          authBody = normalized;
-        }
-      } catch {
-        // fall through to HTML/error handling
-      }
+  const parsedAuth = tryParseJsonOrObject(rawAuth);
+  if (parsedAuth) {
+    const normalized = normalizeRsResponse(parsedAuth);
+    if (normalized && typeof normalized === "object") {
+      authBody = normalized;
     }
-    const looksLikeHtml =
-      (trimmed.startsWith("<!DOCTYPE") ||
-        trimmed.startsWith("<html") ||
-        trimmed.startsWith("<")) ||
-      contentType.toLowerCase().includes("text/html");
-    if (!authBody && looksLikeHtml) {
-      const { snippet, dataType } = extractHtmlSnippet(rawAuth, 500);
-      const err = new RsHtmlResponseError("RS login returned HTML", {
-        htmlSnippet: snippet,
-        statusCode: authResp.status,
-        url: authResp.config?.url,
-        contentType,
-        dataType,
-      });
-      throw err;
-    }
-  } else if (isHtmlPayload(rawAuth, authResp.headers)) {
+  }
+
+  const looksLikeHtml = isHtmlPayload(rawAuth, authResp.headers);
+  if (!authBody && looksLikeHtml) {
     const { snippet, dataType } = extractHtmlSnippet(rawAuth, 500);
     const err = new RsHtmlResponseError("RS login returned HTML", {
       htmlSnippet: snippet,
@@ -335,11 +398,6 @@ async function createRsSession(su, sp) {
       dataType,
     });
     throw err;
-  } else {
-    const normalized = normalizeRsResponse(rawAuth);
-    if (normalized && typeof normalized === "object") {
-      authBody = normalized;
-    }
   }
 
   if (!authBody) {
@@ -353,6 +411,12 @@ async function createRsSession(su, sp) {
   }
   if (authBody.AuthenticationStep && authBody.AuthenticationStep !== 2) {
     throw new RsAuthError("RS authentication requires additional verification");
+  }
+  const hasUserName = Boolean(authBody.UserName);
+  const hasUserToken = typeof authBody.userToken === "string" && authBody.userToken.trim().length > 0;
+  const hasId = authBody.ID !== undefined || authBody.UserId !== undefined;
+  if (!hasUserName || !hasUserToken || !hasId) {
+    throw new RsAuthError("Unexpected RS authentication payload");
   }
   if (authBody.userToken) {
     await setRsCookie(jar, "userToken", authBody.userToken);
@@ -370,6 +434,7 @@ async function fetchWaybillPageMeta(session) {
     headers: {
       Referer: `${RS_BASE_URL}/`,
       "User-Agent": USER_AGENT,
+      "Accept-Language": "ka,en;q=0.9",
     },
   });
 
@@ -380,15 +445,24 @@ async function fetchWaybillPageMeta(session) {
     throw new RsHttpError("RS waybill page unavailable", pageResp.status);
   }
   const html = pageResp.data || "";
+  if (isProbablyLoginPage(html)) {
+    const snippet =
+      typeof html === "string" ? html.slice(0, 500) : "[non-string waybill page response]";
+    const err = new RsSessionError("RS returned login shell for waybill page");
+    err.htmlSnippet = snippet;
+    throw err;
+  }
   const { pageId, sessionId, currentTab } = extractPageSession(html);
   if (!pageId || !sessionId) {
     const snippet =
-      typeof html === "string" ? html.slice(0, 1000) : "[non-string waybill page response]";
+      typeof html === "string" ? html.slice(0, 500) : "[non-string waybill page response]";
     console.error("[RS_GRID][Waybills][METADATA_PARSE_FAILED]", {
       reason: "Failed to extract page metadata for waybills",
       snippet,
     });
-    throw new RsSessionError("Failed to extract page metadata for waybills");
+    const err = new RsSchemaChangedError("Failed to extract page metadata for waybills");
+    err.htmlSnippet = snippet;
+    throw err;
   }
   return { pageId, sessionId, currentTab: currentTab || "tab_given" };
 }
@@ -412,6 +486,12 @@ function buildFilterExpression(range) {
       FilterValue: STATUS_FILTER_VALUES.join(","),
       Func: RS_FILTER_FUNCS.InList,
     },
+    {
+      FieldName: "mdWaybillStatus",
+      DataType: RS_DATA_TYPES.string,
+      FilterValue: STATUS_TEXT_FILTER_VALUES.join(","),
+      Func: RS_FILTER_FUNCS.InList,
+    },
   ];
   return filters;
 }
@@ -424,6 +504,17 @@ function buildSummaryFields() {
       SummaryFraction: 2,
       SummaryField: null,
       SummaryType: 0,
+      FieldName2: "",
+      SummaryFunction2: 0,
+    },
+    {
+      FieldName: "TRANSPORT_COAST",
+      SummaryFunction: 1,
+      SummaryFraction: 2,
+      SummaryField: null,
+      SummaryType: 0,
+      FieldName2: "",
+      SummaryFunction2: 0,
     },
   ];
 }
@@ -435,10 +526,20 @@ async function requestGrid(session, payload) {
       "X-Requested-With": "XMLHttpRequest",
       Referer: `${RS_BASE_URL}/WB/Waybills`,
       Origin: RS_BASE_URL,
+      "Accept-Language": "ka,en;q=0.9",
     },
   });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new RsSessionError("RS rejected grid request (session)");
+  }
   if (isHtmlPayload(resp.data, resp.headers)) {
     const { snippet, dataType } = extractHtmlSnippet(resp.data, 500);
+    if (isProbablyLoginPage(snippet)) {
+      const err = new RsSessionError("RS returned login HTML for grid request");
+      err.htmlSnippet = snippet;
+      err.statusCode = resp.status;
+      throw err;
+    }
     const err = new RsHtmlResponseError("RS returned HTML for grid request", {
       htmlSnippet: snippet,
       statusCode: resp.status,
@@ -453,11 +554,11 @@ async function requestGrid(session, payload) {
   if (resp.status >= 500) {
     throw new RsHttpError("RS grid endpoint unavailable", resp.status);
   }
-  const normalized = normalizeRsResponse(resp.data);
-  if (!normalized) {
+  const parsedData = tryParseJsonOrObject(resp.data);
+  if (!parsedData) {
     throw new RsParseError("Empty RS grid response");
   }
-  return normalized;
+  return parsedData;
 }
 
 function parseAmount(value) {
@@ -475,16 +576,25 @@ function parseAmount(value) {
 }
 
 function pickFullAmount(payload, fallbackRange) {
-  const rsStartDate = payload.StartDate || payload.startDate || fallbackRange.start;
-  const rsEndDate = payload.EndDate || payload.endDate || fallbackRange.end;
-
-  const dataSection = payload.Data || payload.data || {};
+  if (!payload || typeof payload !== "object" || !payload.d) {
+    const err = new RsSchemaChangedError("RS grid payload missing d");
+    err.payload = payload;
+    throw err;
+  }
+  const envelope = payload.d;
+  const dataSection = envelope.Data || envelope.data || {};
   const fields = dataSection.Fields || dataSection.fields || [];
-  const summaryRow = dataSection.SummaryRow || dataSection.summaryRow || payload.SummaryRow;
-  const summaryObject = payload.Summary || dataSection.Summary;
+  const rows = Array.isArray(dataSection.Rows) ? dataSection.Rows : [];
+  const summaryRow =
+    Array.isArray(dataSection.SummaryRow) && dataSection.SummaryRow.length
+      ? dataSection.SummaryRow
+      : Array.isArray(envelope.SummaryRow) && envelope.SummaryRow.length
+        ? envelope.SummaryRow
+        : null;
+  const summaryObject = envelope.Summary || dataSection.Summary;
 
-  if (!Array.isArray(fields) || !Array.isArray(summaryRow)) {
-    const err = new RsSchemaChangedError("Fields or SummaryRow missing in RS response");
+  if (!Array.isArray(fields) || !Array.isArray(rows)) {
+    const err = new RsSchemaChangedError("Fields or Rows missing in RS response");
     err.payload = payload;
     throw err;
   }
@@ -492,52 +602,127 @@ function pickFullAmount(payload, fallbackRange) {
   const amountIdx = fields.findIndex(
     (field) => typeof field === "string" && field.toUpperCase() === "FULL_AMOUNT"
   );
-  if (amountIdx < 0 || amountIdx >= summaryRow.length) {
+  if (amountIdx < 0) {
     const err = new RsSchemaChangedError("FULL_AMOUNT missing in RS response");
     err.payload = payload;
     throw err;
   }
 
-  let candidate = summaryRow[amountIdx];
-  if (candidate === null && summaryObject && typeof summaryObject === "object") {
-    const key = Object.keys(summaryObject).find((k) => k.toUpperCase() === "FULL_AMOUNT");
-    if (key) {
-      candidate = summaryObject[key];
+  let total = null;
+  let rawSummary = summaryRow || summaryObject || null;
+
+  if (summaryRow && summaryRow.length > amountIdx) {
+    const candidate = parseAmount(summaryRow[amountIdx]);
+    if (Number.isFinite(candidate)) {
+      total = candidate;
     }
   }
-  if (candidate === null && Array.isArray(dataSection.Rows) && dataSection.Rows.length === 0) {
-    candidate = 0;
-  }
-  if (candidate === null) {
-    const err = new RsSchemaChangedError("FULL_AMOUNT missing in RS response");
-    err.payload = payload;
-    throw err;
+
+  if (total === null && summaryObject && typeof summaryObject === "object") {
+    const key = Object.keys(summaryObject).find((k) => k.toUpperCase() === "FULL_AMOUNT");
+    if (key) {
+      const candidate = parseAmount(summaryObject[key]);
+      if (Number.isFinite(candidate)) {
+        total = candidate;
+      }
+    }
   }
 
-  const total = parseAmount(candidate);
+  if (total === null) {
+    let sum = 0;
+    for (const row of rows) {
+      if (!Array.isArray(row)) continue;
+      const value = parseAmount(row[amountIdx]);
+      if (Number.isFinite(value)) {
+        sum += value;
+      }
+    }
+    total = sum;
+  }
+
   if (!Number.isFinite(total)) {
     const err = new RsParseError("Unable to parse FULL_AMOUNT");
     err.payload = payload;
     throw err;
   }
 
-  const normalizedStart = normalizeDateString(rsStartDate);
-  const normalizedEnd = normalizeDateString(rsEndDate);
-  const rawSummary = summaryRow || summaryObject || null;
-  return { total, rsStartDate: normalizedStart, rsEndDate: normalizedEnd, rawSummary };
+  const normalizedStart = normalizeDateString(
+    envelope.StartDate || envelope.startDate || getDefaultStart(envelope),
+    fallbackRange.start
+  );
+  const normalizedEnd = normalizeDateString(
+    envelope.EndDate || envelope.endDate || getDefaultEnd(envelope),
+    fallbackRange.end
+  );
+
+  return {
+    total: Number(total.toFixed(2)),
+    rsStartDate: normalizedStart,
+    rsEndDate: normalizedEnd,
+    details: { fieldIndex: amountIdx, fields, fromRs: "grid", rawSummary },
+  };
 }
 
-function normalizeDateString(value) {
-  if (typeof value !== "string") return "";
-  const match = value.match(/(\d{4})[-/.](\d{2})[-/.](\d{2})/);
-  if (match) {
-    return `${match[1]}-${match[2]}-${match[3]}`;
+function parseGeorgianMonthToken(token) {
+  if (!token) return null;
+  const cleaned = token.toString().trim().toLowerCase();
+  if (!cleaned) return null;
+  return GEORGIAN_MONTHS[cleaned] || null;
+}
+
+function parseDayMonthYear(value) {
+  const match = value.match(/(\d{1,2})[-/.]\s*([^\s/-]+)\s*[-/.]\s*(\d{2,4})/);
+  if (!match) return null;
+  const day = Number(match[1]);
+  const monthToken = match[2];
+  const yearRaw = Number(match[3]);
+  const month = Number.isFinite(Number(monthToken))
+    ? Number(monthToken)
+    : parseGeorgianMonthToken(monthToken);
+  if (!Number.isFinite(day) || !Number.isFinite(month)) return null;
+  const year = yearRaw < 100 ? 2000 + yearRaw : yearRaw;
+  return { day, month, year };
+}
+
+function normalizeDateString(value, fallback) {
+  if (typeof value !== "string") return fallback || "";
+  const trimmed = value.trim();
+  const isoMatch = trimmed.match(/(\d{4})[-/.](\d{2})[-/.](\d{2})/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
   }
-  const parsed = new Date(value.replace(" ", "T"));
+  const rangeParts = trimmed.split("/").map((p) => p.trim());
+  if (rangeParts.length === 2) {
+    const first = normalizeDateString(rangeParts[0]);
+    if (first) return first;
+  }
+  const dmy = parseDayMonthYear(trimmed);
+  if (dmy) {
+    return `${String(dmy.year).padStart(4, "0")}-${String(dmy.month).padStart(2, "0")}-${String(
+      dmy.day
+    ).padStart(2, "0")}`;
+  }
+  const parsed = new Date(trimmed.replace(" ", "T"));
   if (Number.isNaN(parsed.getTime())) {
-    return "";
+    return fallback || "";
   }
   return formatIso(parsed);
+}
+
+function getDefaultStart(envelope) {
+  if (!envelope?.DefaultValues || typeof envelope.DefaultValues !== "object") return "";
+  const raw = envelope.DefaultValues.ACTIVATE_DATE;
+  if (typeof raw !== "string") return "";
+  const parts = raw.split("/").map((p) => p.trim());
+  return parts[0] || "";
+}
+
+function getDefaultEnd(envelope) {
+  if (!envelope?.DefaultValues || typeof envelope.DefaultValues !== "object") return "";
+  const raw = envelope.DefaultValues.ACTIVATE_DATE;
+  if (typeof raw !== "string") return "";
+  const parts = raw.split("/").map((p) => p.trim());
+  return parts[1] || "";
 }
 
 function shouldRetry(err) {
@@ -569,7 +754,7 @@ async function runWithRetry(fn, attempts, onRetry) {
 
 /**
  * Fetch the strict grid total for a given month from RS Waybills.
- * @param {{ su: string; sp: string; year: number; month: number; }} opts
+ * @param {{ su: string; plain_sp: string; year: number; month: number; }} opts
  * @returns {Promise<RsGridTotalResult>}
  */
 async function fetchRsGridTotalForMonth(opts) {
@@ -578,20 +763,22 @@ async function fetchRsGridTotalForMonth(opts) {
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const session = await createRsSession(opts.su, opts.sp);
+      const session = await createRsSession(opts.su, opts.plain_sp);
       const pageMeta = await fetchWaybillPageMeta(session);
       const payload = {
         PageID: pageMeta.pageId,
         SessionID: pageMeta.sessionId,
-        currentTab: "tab_given",
+        currentTab: pageMeta.currentTab || "tab_given",
         currentTabNotif: "",
-        endDate: "",
+        startDate: range.start,
+        endDate: range.end,
+        StartDate: range.start,
+        EndDate: range.end,
         filterExpression: buildFilterExpression(range),
         gridData: 1,
         ignorePeriod: false,
-        maximumRows: 200,
+        maximumRows: 10,
         sortExpression: "",
-        startDate: "",
         startRowIndex: 0,
         summaryFields: buildSummaryFields(),
       };
@@ -619,6 +806,17 @@ async function fetchRsGridTotalForMonth(opts) {
 
   throw lastError || new Error("Failed to fetch RS grid total");
 }
+
+// Dev helper for local verification:
+// (async () => {
+//   const result = await fetchRsGridTotalForMonth({
+//     su: "amnairi:412761097",
+//     plain_sp: "Amikoio33@",
+//     year: 2025,
+//     month: 11,
+//   });
+//   console.log("GRID RESULT", result);
+// })().catch(console.error);
 
 module.exports = {
   fetchRsGridTotalForMonth,
