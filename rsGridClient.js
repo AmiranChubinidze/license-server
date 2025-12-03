@@ -221,6 +221,31 @@ function extractPageSession(html) {
   return { pageId, sessionId, currentTab };
 }
 
+function extractWaybillsPageMetadata(html) {
+  if (typeof html !== "string" || !html.trim()) {
+    const err = new RsSchemaChangedError("Waybills page HTML missing or invalid");
+    err.htmlSnippet = typeof html === "string" ? html.slice(0, 200) : "";
+    throw err;
+  }
+
+  const pageIdMatch = html.match(/id=["']PageID["'][^>]*value=["']([^"']+)["']/i);
+  const sessionIdMatch = html.match(/id=["']SessionID["'][^>]*value=["']([^"']+)["']/i);
+
+  const PageID = pageIdMatch && pageIdMatch[1] ? pageIdMatch[1].trim() : "";
+  const SessionID = sessionIdMatch && sessionIdMatch[1] ? sessionIdMatch[1].trim() : "";
+
+  if (!PageID || !SessionID) {
+    const snippet = html.slice(0, 500);
+    const err = new RsSchemaChangedError("Failed to extract page metadata for waybills");
+    err.htmlSnippet = snippet;
+    err.pageID = PageID;
+    err.sessionID = SessionID;
+    throw err;
+  }
+
+  return { PageID, SessionID };
+}
+
 function setRsCookie(jar, name, value) {
   if (!value) return Promise.resolve();
   const cookieString = `${name}=${value}; Path=/;`;
@@ -452,19 +477,22 @@ async function fetchWaybillPageMeta(session) {
     err.htmlSnippet = snippet;
     throw err;
   }
-  const { pageId, sessionId, currentTab } = extractPageSession(html);
-  if (!pageId || !sessionId) {
+  try {
+    const meta = extractWaybillsPageMetadata(html);
+    const currentTab =
+      (typeof html === "string" &&
+        (html.match(/currentTab["']?\s*[:=]\s*["']([^"']+)["']/i)?.[1] || "tab_given")) ||
+      "tab_given";
+    return { pageId: meta.PageID, sessionId: meta.SessionID, currentTab };
+  } catch (err) {
     const snippet =
       typeof html === "string" ? html.slice(0, 500) : "[non-string waybill page response]";
     console.error("[RS_GRID][Waybills][METADATA_PARSE_FAILED]", {
-      reason: "Failed to extract page metadata for waybills",
+      reason: err?.message || "Failed to extract page metadata for waybills",
       snippet,
     });
-    const err = new RsSchemaChangedError("Failed to extract page metadata for waybills");
-    err.htmlSnippet = snippet;
     throw err;
   }
-  return { pageId, sessionId, currentTab: currentTab || "tab_given" };
 }
 
 function buildFilterExpression(range) {
