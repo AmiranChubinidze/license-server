@@ -883,23 +883,13 @@ function filterWaybillRecords(records, config, targetRange, options = {}) {
       }
     };
 
-    const decision = determineExclusionReason(record, config, { targetRange, log });
-
-    const debugEntry = buildDebugEntry(record, decision);
-
-    if (decision.exclude) {
-      excludedCount += 1;
-      if (captureLists) {
-        excluded.push(debugEntry);
-      }
-      continue;
-    }
-
+    const amount = normalizeFullAmount(record);
+    const safeAmount = Number.isFinite(amount) ? amount : 0;
     includedCount += 1;
-    total += decision.amount;
-    log("AMOUNT_ADDED", `amount=${decision.amount.toFixed(2)}`);
+    total += safeAmount;
+    log("AMOUNT_ADDED", `amount=${safeAmount.toFixed(2)}`);
     if (captureLists) {
-      included.push(debugEntry);
+      included.push(buildDebugEntryNoFilter(record, safeAmount));
     }
   }
 
@@ -1084,6 +1074,22 @@ function buildDebugEntry(record, decision) {
         "",
       ACTIVATE_DATE: decision.rawDates?.activate ?? getFirstValue(record, ["ACTIVATE_DATE"]) ?? "",
       CREATE_DATE: decision.rawDates?.create ?? getFirstValue(record, ["CREATE_DATE"]) ?? "",
+    },
+  };
+}
+
+function buildDebugEntryNoFilter(record, amount) {
+  const normalizedDate = normalizeWaybillDate(getFirstValue(record, [WAYBILL_DATE_SOURCE])) || null;
+  return {
+    ID: resolveWaybillId(record) || "",
+    EFFECTIVE_DATE: normalizedDate,
+    FULL_AMOUNT: Number.isFinite(amount) ? Number(amount.toFixed(2)) : null,
+    EXCLUDED_REASON: null,
+    DATE_SOURCE: WAYBILL_DATE_SOURCE,
+    RAW_DATES: {
+      BEGIN_DATE: getFirstValue(record, [WAYBILL_DATE_SOURCE]) ?? "",
+      ACTIVATE_DATE: getFirstValue(record, ["ACTIVATE_DATE"]) ?? "",
+      CREATE_DATE: getFirstValue(record, ["CREATE_DATE"]) ?? "",
     },
   };
 }
