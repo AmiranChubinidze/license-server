@@ -53,10 +53,9 @@ if (!supabase) {
 const SERVICE_USERS_TABLE = "service_users";
 const LOGIN_REQUESTS_TABLE = "login_requests";
 const SOAP_DATE_KEYS = ["create_date", "last_update_date"];
-const SOAP_DATE_KEY_OVERRIDE = process.env.SOAP_DATE_KEY
-  ? sanitizeSoapDateKey(process.env.SOAP_DATE_KEY)
-  : null;
-let soapDateKey = SOAP_DATE_KEY_OVERRIDE || SOAP_DATE_KEYS[0];
+const SOAP_DATE_KEY_OVERRIDE_RAW = process.env.SOAP_DATE_KEY;
+const SOAP_DATE_KEY_OVERRIDE = resolveSoapDateKeyOverride(SOAP_DATE_KEY_OVERRIDE_RAW);
+let soapDateKey = null;
 const WAYBILL_ALLOWED_STATUSES = new Set(["1", "2", "8", "-2"]);
 const WAYBILL_AMOUNT_FIELDS = ["FULL_AMOUNT"];
 const WAYBILL_EXPECTED_TYPE = "2";
@@ -543,22 +542,43 @@ function chunkDateRange(range, windowDays = 3) {
   return chunks;
 }
 
-function sanitizeSoapDateKey(key) {
-  return SOAP_DATE_KEYS.includes(key) ? key : SOAP_DATE_KEYS[0];
+function resolveSoapDateKeyOverride(raw) {
+  if (!raw) {
+    return null;
+  }
+  const candidate = String(raw).trim().toLowerCase();
+  if (!SOAP_DATE_KEYS.includes(candidate)) {
+    console.warn(`[SOAP] Ignoring invalid SOAP_DATE_KEY override: ${raw}`);
+    return null;
+  }
+  return candidate;
+}
+
+function getAlternateSoapDateKey(key) {
+  return SOAP_DATE_KEYS.find((entry) => entry !== key) || null;
+}
+
+function shouldUseFallbackKey(err) {
+  return err?.soapStatus === -1072;
 }
 
 function shouldRetryWithSmallerWindow(err, windowDays) {
   if (windowDays <= 1) {
     return false;
   }
-  if (err?.soapStatus === -1072) {
+  if (err?.isTimeout || err?.isNetworkError) {
     return true;
   }
-  if (err?.code === "ECONNABORTED") {
+  if (err?.httpStatus && err.httpStatus >= 500) {
     return true;
   }
-  const message = String(err?.message || "").toLowerCase();
-  return Boolean(message && message.includes("timeout"));
+  if (err?.isHtmlResponse) {
+    return true;
+  }
+  if (err?.soapStatus === -1072 && shouldUseFallbackKey(err)) {
+    return false;
+  }
+  return false;
 }
 
 const MAX_SOAP_WINDOW_DAYS = 3;
@@ -594,16 +614,6 @@ async function fetchWaybillTotal(credentials, monthKey, options = {}) {
     logWaybillSummary(summary);
     return summary;
   } catch (err) {
-    if (err?.soapStatus === -1072) {
-      try {
-        return await fetchWaybillTotalInChunks(credentials, range, { filterConfig, targetRange: range });
-      } catch (chunkErr) {
-        if (!chunkErr.isSoapError) {
-          chunkErr.isSoapError = true;
-        }
-        throw chunkErr;
-      }
-    }
     console.error("[SOAP] Request failed:", err?.message || err);
     if (err?.isSoapError) {
       throw err;
@@ -665,8 +675,12 @@ function extractSoapStatus(xml) {
   return Number.isNaN(value) ? null : value;
 }
 
-function handleSoapStatus(statusCode, su) {
+function handleSoapStatus(statusCode, su, options = {}) {
+  const allow1072Fallback = Boolean(options.allow1072Fallback);
   if (statusCode === -1072) {
+    if (allow1072Fallback) {
+      return;
+    }
     const error = new Error("RS.ge returned STATUS -1072");
     error.isSoapError = true;
     error.soapStatus = -1072;
@@ -680,6 +694,14 @@ function handleSoapStatus(statusCode, su) {
     error.soapStatus = -100;
     error.su = su;
     throw error;
+  }
+}
+
+class SOAPDateKeyError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SOAPDateKeyError";
+    this.isSoapError = true;
   }
 }
 
