@@ -72,9 +72,16 @@ class RsSessionError extends Error {
 }
 
 class RsHtmlResponseError extends Error {
-  constructor(message) {
+  /**
+   * @param {string} message
+   * @param {{ htmlSnippet?: string; statusCode?: number; url?: string }} [meta]
+   */
+  constructor(message, meta = {}) {
     super(message || "RS returned HTML instead of JSON");
     this.name = "RsHtmlResponseError";
+    this.htmlSnippet = meta.htmlSnippet || "";
+    this.statusCode = meta.statusCode;
+    this.url = meta.url;
   }
 }
 
@@ -169,6 +176,11 @@ function isHtmlPayload(body, headers) {
   return false;
 }
 
+function extractHtmlSnippet(body, limit = 300) {
+  if (typeof body !== "string") return "";
+  return body.slice(0, limit);
+}
+
 function parseTinFromSu(su) {
   if (typeof su !== "string") return "";
   const parts = su.split(":");
@@ -224,7 +236,13 @@ async function createRsSession(su, sp) {
   });
 
   if (isHtmlPayload(authResp.data, authResp.headers)) {
-    throw new RsSessionError("RS login returned HTML");
+    const snippet = extractHtmlSnippet(authResp.data);
+    const err = new RsHtmlResponseError("RS login returned HTML", {
+      htmlSnippet: snippet,
+      statusCode: authResp.status,
+      url: authResp.config?.url,
+    });
+    throw err;
   }
 
   const authBody = normalizeRsResponse(authResp.data);
@@ -316,7 +334,12 @@ async function requestGrid(session, payload) {
     },
   });
   if (isHtmlPayload(resp.data, resp.headers)) {
-    const err = new RsHtmlResponseError("RS returned HTML for grid request");
+    const snippet = extractHtmlSnippet(resp.data);
+    const err = new RsHtmlResponseError("RS returned HTML for grid request", {
+      htmlSnippet: snippet,
+      statusCode: resp.status,
+      url: resp.config?.url,
+    });
     err.response = resp;
     throw err;
   }

@@ -2143,6 +2143,26 @@ app.get("/api/rs/waybills/grid-total", async (req, res) => {
   return handleRsGridTotalRequest(req, res);
 });
 
+// Compatibility alias for legacy clients: POST /waybill/total -> grid totals (no SOAP).
+app.post("/waybill/total", (req, res) => {
+  if (req.body?.year && !req.query.year) {
+    req.query.year = String(req.body.year);
+  }
+  if (req.body?.month && !req.query.month) {
+    const rawMonth = String(req.body.month);
+    if (/^\d{4}-\d{2}$/.test(rawMonth)) {
+      const [y, m] = rawMonth.split("-");
+      if (!req.query.year) {
+        req.query.year = y;
+      }
+      req.query.month = m;
+    } else {
+      req.query.month = rawMonth;
+    }
+  }
+  return handleRsGridTotalRequest(req, res);
+});
+
 async function handleRsGridTotalRequest(req, res) {
   const token = extractToken(req);
   const year = Number(req.query?.year);
@@ -2198,6 +2218,14 @@ async function handleRsGridTotalRequest(req, res) {
       err?.name === "NotBeforeError";
     if (isJwtError) {
       return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
+    if (err instanceof RsHtmlResponseError) {
+      console.error("[RS][grid-total][HTML]", {
+        message: err.message,
+        url: err.url,
+        statusCode: err.statusCode,
+        htmlSnippet: err.htmlSnippet,
+      });
     }
     const mapped = mapRsGridError(err);
     console.error("[RS][grid-total] Error:", err?.message || err);
