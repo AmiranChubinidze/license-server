@@ -2224,6 +2224,8 @@ async function handleRsGridTotalRequest(req, res) {
         message: err.message,
         url: err.url,
         statusCode: err.statusCode,
+        contentType: err.contentType,
+        dataType: err.dataType,
         htmlSnippet: err.htmlSnippet,
       });
     }

@@ -177,8 +177,21 @@ function isHtmlPayload(body, headers) {
 }
 
 function extractHtmlSnippet(body, limit = 300) {
-  if (typeof body !== "string") return "";
-  return body.slice(0, limit);
+  let dataType = typeof body;
+  try {
+    if (typeof body === "string") {
+      return { snippet: body.slice(0, limit), dataType };
+    }
+    if (Buffer.isBuffer(body)) {
+      return { snippet: body.toString("utf8").slice(0, limit), dataType: "buffer" };
+    }
+    if (body !== null && body !== undefined) {
+      return { snippet: JSON.stringify(body).slice(0, limit), dataType };
+    }
+    return { snippet: "", dataType };
+  } catch (err) {
+    return { snippet: "[unserializable response data]", dataType };
+  }
 }
 
 function parseTinFromSu(su) {
@@ -233,14 +246,19 @@ async function createRsSession(su, sp) {
       Origin: RS_BASE_URL,
       Referer: `${RS_BASE_URL}${RS_LOGIN_PATH}`,
     },
+    responseType: "text",
   });
 
   if (isHtmlPayload(authResp.data, authResp.headers)) {
-    const snippet = extractHtmlSnippet(authResp.data);
+    const { snippet, dataType } = extractHtmlSnippet(authResp.data, 500);
     const err = new RsHtmlResponseError("RS login returned HTML", {
       htmlSnippet: snippet,
       statusCode: authResp.status,
       url: authResp.config?.url,
+      contentType:
+        (authResp.headers && (authResp.headers["content-type"] || authResp.headers["Content-Type"])) ||
+        "",
+      dataType,
     });
     throw err;
   }
@@ -334,11 +352,14 @@ async function requestGrid(session, payload) {
     },
   });
   if (isHtmlPayload(resp.data, resp.headers)) {
-    const snippet = extractHtmlSnippet(resp.data);
+    const { snippet, dataType } = extractHtmlSnippet(resp.data, 500);
     const err = new RsHtmlResponseError("RS returned HTML for grid request", {
       htmlSnippet: snippet,
       statusCode: resp.status,
       url: resp.config?.url,
+      contentType:
+        (resp.headers && (resp.headers["content-type"] || resp.headers["Content-Type"])) || "",
+      dataType,
     });
     err.response = resp;
     throw err;
