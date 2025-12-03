@@ -57,6 +57,7 @@ const SOAP_DATE_KEYS = ["create_date", "last_update_date"];
 const SOAP_DATE_KEY_OVERRIDE_RAW = process.env.SOAP_DATE_KEY;
 const SOAP_DATE_KEY_OVERRIDE = resolveSoapDateKeyOverride(SOAP_DATE_KEY_OVERRIDE_RAW);
 let soapDateKey = null;
+const soapDisabledBySu = new Map();
 const WAYBILL_ALLOWED_STATUSES = new Set(["1", "2", "8", "-2"]);
 const WAYBILL_AMOUNT_FIELDS = ["FULL_AMOUNT"];
 const WAYBILL_EXPECTED_TYPE = "2";
@@ -637,6 +638,7 @@ async function fetchWaybillTotal(credentials, monthKey, options = {}) {
 }
 
 async function requestWaybillXml(credentials, range, overrideKey) {
+  assertSoapEnabled(credentials?.su);
   const key = sanitizeSoapDateKey(overrideKey || soapDateKey);
   const startTag = `${key}_s`;
   const endTag = `${key}_e`;
@@ -693,12 +695,8 @@ function handleSoapStatus(statusCode, su, options = {}) {
     if (allow1072Fallback) {
       return;
     }
-    const error = new Error("RS.ge returned STATUS -1072");
-    error.isSoapError = true;
-    error.soapStatus = -1072;
-    error.httpStatus = 403;
-    error.su = su;
-    throw error;
+    disableSoapForSu(su, "-1072");
+    throw new SoapDisabledError(su, "-1072");
   }
   if (statusCode === -100) {
     const error = new Error("RS.ge rejected date parameters");
@@ -715,6 +713,42 @@ class SOAPDateKeyError extends Error {
     this.name = "SOAPDateKeyError";
     this.isSoapError = true;
   }
+}
+
+class SoapDisabledError extends Error {
+  constructor(su, reason) {
+    super(`SOAP disabled for SU ${su}: ${reason}`);
+    this.name = "SoapDisabledError";
+    this.su = su;
+    this.reason = reason;
+    this.isSoapError = true;
+  }
+}
+
+function isSoapDisabled(su) {
+  if (!su) return false;
+  const entry = soapDisabledBySu.get(su);
+  return Boolean(entry && entry.disabled);
+}
+
+function assertSoapEnabled(su) {
+  if (isSoapDisabled(su)) {
+    const entry = soapDisabledBySu.get(su);
+    throw new SoapDisabledError(su, entry?.reason || "disabled");
+  }
+}
+
+function disableSoapForSu(su, reason) {
+  if (!su) return;
+  if (soapDisabledBySu.has(su)) return;
+  soapDisabledBySu.set(su, {
+    disabled: true,
+    reason,
+    firstSeenAt: new Date().toISOString(),
+  });
+  console.warn(
+    `[SOAP] Disabling SOAP for SU ${su} due to STATUS ${reason || "-1072"} (RS permissions or limits)`
+  );
 }
 
 async function summarizeWaybillTotalsFromXml(
@@ -1722,15 +1756,12 @@ app.get("/debug/waybills", async (req, res) => {
       logs: result.logs || [],
     });
   } catch (err) {
-    if (err?.soapStatus === -1072) {
-      console.warn(
-        `[SOAP] SU ${user?.su || "unknown"} returned STATUS -1072 (RS permissions or limits)`
-      );
-      return res.status(403).json({
+    if (err instanceof SoapDisabledError) {
+      return res.status(503).json({
         success: false,
-        code: -1072,
+        code: "SOAP_DISABLED",
         message:
-          "RS.ge rejected this request (STATUS -1072). Please verify SU permissions or try again later.",
+          "SOAP waybill service is not available for this account. Use grid totals instead.",
       });
     }
     console.error("[/debug/waybills] Failed:", err?.message || err);
@@ -1798,15 +1829,12 @@ app.get("/waybill/debugList", async (req, res) => {
       logs: result.logs || [],
     });
   } catch (err) {
-    if (err?.soapStatus === -1072) {
-      console.warn(
-        `[SOAP] SU ${user?.su || "unknown"} returned STATUS -1072 (RS permissions or limits)`
-      );
-      return res.status(403).json({
+    if (err instanceof SoapDisabledError) {
+      return res.status(503).json({
         success: false,
-        code: -1072,
+        code: "SOAP_DISABLED",
         message:
-          "RS.ge rejected this request (STATUS -1072). Please verify SU permissions or try again later.",
+          "SOAP waybill service is not available for this account. Use grid totals instead.",
       });
     }
     console.error("[/waybill/debugList] Failed:", err?.message || err);
@@ -1985,14 +2013,12 @@ app.post("/waybill/total", async (req, res) => {
       message: "OK",
     });
   } catch (err) {
-    if (err?.soapStatus === -1072) {
-      console.warn(
-        `[SOAP] SU ${user?.su || "unknown"} returned STATUS -1072 (RS permissions or limits)`
-      );
-      return res.status(403).json({
+    if (err instanceof SoapDisabledError) {
+      return res.status(503).json({
         success: false,
-        code: -1072,
-        message: "RS.ge rejected this request (STATUS -1072). Please verify SU permissions or try again later.",
+        code: "SOAP_DISABLED",
+        message:
+          "SOAP waybill service is not available for this account. Use grid totals instead.",
       });
     }
     console.error("Waybill total failed:", err?.message || err);
