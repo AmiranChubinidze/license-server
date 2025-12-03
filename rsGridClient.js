@@ -177,6 +177,17 @@ function extractPageSession(html) {
   return { pageId, sessionId, currentTab };
 }
 
+function setRsCookie(jar, name, value) {
+  if (!value) return Promise.resolve();
+  const cookieString = `${name}=${value}; Path=/;`;
+  return new Promise((resolve, reject) => {
+    jar.setCookie(cookieString, RS_BASE_URL, (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+}
+
 function normalizeRsResponse(payload) {
   if (
     payload &&
@@ -344,11 +355,12 @@ async function createRsSession(su, sp) {
     throw new RsAuthError("RS authentication requires additional verification");
   }
   if (authBody.userToken) {
-    jar.setCookieSync(`userToken=${authBody.userToken}; Domain=eservices.rs.ge; Path=/; Secure`, RS_BASE_URL);
+    await setRsCookie(jar, "userToken", authBody.userToken);
   }
   if (authBody.chat_token) {
-    jar.setCookieSync(`chatToken=${authBody.chat_token}; Domain=eservices.rs.ge; Path=/; Secure`, RS_BASE_URL);
+    await setRsCookie(jar, "chatToken", authBody.chat_token);
   }
+  await setRsCookie(jar, "isEmp", "0");
 
   return { client, jar, su, tin: parseTinFromSu(su) };
 }
