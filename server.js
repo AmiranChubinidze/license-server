@@ -1067,9 +1067,9 @@ function applyDateFilter(records, targetRange) {
     return records;
   }
   return records.filter((record) => {
-    const begin = normalizeWaybillDate(getFirstValue(record, [WAYBILL_DATE_SOURCE]));
-    if (!begin) return false;
-    return begin >= targetRange.start && begin <= targetRange.end;
+    const { date } = resolveFilterDate(record);
+    if (!date) return false;
+    return date >= targetRange.start && date <= targetRange.end;
   });
 }
 
@@ -1119,7 +1119,7 @@ function getFirstValue(record, keys) {
 function determineExclusionReason(record, config, correctionContext = {}) {
   const id = resolveWaybillId(record) || "unknown";
   const log = correctionContext.log;
-  const effectiveDate = getEffectiveDate(record, { id, log });
+  const { date: effectiveDate, source: dateSource } = resolveFilterDate(record, { id, log });
   const rawDates = {
     begin: getFirstValue(record, [WAYBILL_DATE_SOURCE]),
     activate: getFirstValue(record, ["ACTIVATE_DATE"]),
@@ -1141,7 +1141,7 @@ function determineExclusionReason(record, config, correctionContext = {}) {
     return {
       ...baseDecision,
       exclude: true,
-      reason: "missing or invalid BEGIN_DATE",
+      reason: "missing usable date",
     };
   }
 
@@ -1151,13 +1151,13 @@ function determineExclusionReason(record, config, correctionContext = {}) {
       if (log) {
         log(
           "DATE_FILTER_OUT",
-          `begin=${effectiveDate} reason="outside target range ${start}..${end}"`
+          `date=${effectiveDate} reason="outside target range ${start}..${end}"`
         );
       }
       return {
         ...baseDecision,
         exclude: true,
-        reason: `begin date ${effectiveDate} outside ${start}..${end}`,
+        reason: `date ${effectiveDate} outside ${start}..${end}`,
       };
     }
   }
@@ -1177,21 +1177,32 @@ function determineExclusionReason(record, config, correctionContext = {}) {
   return {
     ...baseDecision,
     amount,
+    dateSource,
   };
 }
 
-// Month filtering is based strictly on BEGIN_DATE. ACTIVATE_DATE/CREATE_DATE are logged but not used.
-function getEffectiveDate(waybill, options = {}) {
+// Month filtering uses ACTIVATE_DATE -> BEGIN_DATE -> CREATE_DATE priority.
+function resolveFilterDate(waybill, options = {}) {
   const id = options?.id || resolveWaybillId(waybill) || "unknown";
   const log = options?.log;
-  const beginRaw = getFirstValue(waybill, [WAYBILL_DATE_SOURCE]);
-  const normalized = normalizeWaybillDate(beginRaw);
-
-  if (log) {
-    log("DATE_PICK", `source=${WAYBILL_DATE_SOURCE} value=${normalized || beginRaw || "missing"}`);
+  const candidates = [
+    { key: "ACTIVATE_DATE", value: getFirstValue(waybill, ["ACTIVATE_DATE"]) },
+    { key: "BEGIN_DATE", value: getFirstValue(waybill, [WAYBILL_DATE_SOURCE]) },
+    { key: "CREATE_DATE", value: getFirstValue(waybill, ["CREATE_DATE"]) },
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeWaybillDate(candidate.value);
+    if (log) {
+      log(
+        "DATE_PICK",
+        `source=${candidate.key} value=${normalized || candidate.value || "missing"}`
+      );
+    }
+    if (normalized) {
+      return { date: normalized, source: candidate.key };
+    }
   }
-
-  return normalized;
+  return { date: null, source: null };
 }
 
 function normalizeFullAmount(record) {
@@ -1272,7 +1283,7 @@ function buildDebugEntry(record, decision) {
     EFFECTIVE_DATE: decision.effectiveDate || null,
     FULL_AMOUNT: amount,
     EXCLUDED_REASON: decision.reason || null,
-    DATE_SOURCE: "BEGIN_DATE",
+    DATE_SOURCE: decision.dateSource || "BEGIN_DATE",
     RAW_DATES: {
       BEGIN_DATE:
         decision.rawDates?.begin ??
