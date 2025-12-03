@@ -871,8 +871,6 @@ function filterWaybillRecords(records, config, targetRange, options = {}) {
   let includedCount = 0;
   let total = 0;
 
-  const correctionContext = buildCorrectionIndex(records);
-
   for (const record of records) {
     const id = resolveWaybillId(record) || "unknown";
     const log = (tag, message) => {
@@ -885,11 +883,7 @@ function filterWaybillRecords(records, config, targetRange, options = {}) {
       }
     };
 
-    const decision = determineExclusionReason(record, config, {
-      ...correctionContext,
-      targetRange,
-      log,
-    });
+    const decision = determineExclusionReason(record, config, { targetRange, log });
 
     const debugEntry = buildDebugEntry(record, decision);
 
@@ -925,24 +919,6 @@ function filterWaybillRecords(records, config, targetRange, options = {}) {
   };
 }
 
-function buildCorrectionIndex(records) {
-  const parentToChildId = new Map();
-  const childToParentId = new Map();
-
-  for (const record of records) {
-    const parentId = resolveParentId(record);
-    const childId = resolveWaybillId(record);
-    const isCorrected = normalizeIsCorrected(getFirstValue(record, WAYBILL_IS_CORRECTED_KEYS));
-
-    if (parentId && childId && isCorrected) {
-      parentToChildId.set(parentId, childId);
-      childToParentId.set(childId, parentId);
-    }
-  }
-
-  return { parentToChildId, childToParentId };
-}
-
 function resolveWaybillId(record) {
   const raw = getFirstValue(record, WAYBILL_ID_KEYS);
   if (raw === undefined || raw === null || raw === "") return "";
@@ -971,62 +947,22 @@ function getFirstValue(record, keys) {
 function determineExclusionReason(record, config, correctionContext = {}) {
   const id = resolveWaybillId(record) || "unknown";
   const log = correctionContext.log;
-  const parentId = resolveParentId(record);
-  const status = normalizeStatus(getFirstValue(record, ["STATUS"]));
-  const type = normalizeType(getFirstValue(record, ["TYPE"]));
-  const sellerTin = normalizeTin(getFirstValue(record, WAYBILL_SELLER_TIN_KEYS));
-  const buyerTin = normalizeTin(getFirstValue(record, WAYBILL_BUYER_TIN_KEYS));
-  const transporterTin = normalizeTin(getFirstValue(record, WAYBILL_TRANSPORTER_TIN_KEYS));
-  const isCorrected = normalizeIsCorrected(getFirstValue(record, WAYBILL_IS_CORRECTED_KEYS));
-  const role = resolveRole(config.myTin, sellerTin, buyerTin, transporterTin);
   const effectiveDate = getEffectiveDate(record, { id, log });
-  const rawDates = {
-    begin: getFirstValue(record, [WAYBILL_DATE_SOURCE]),
-    activate: getFirstValue(record, ["ACTIVATE_DATE"]),
-    create: getFirstValue(record, ["CREATE_DATE"]),
-  };
   const baseDecision = {
     exclude: false,
     reason: null,
     id,
-    status,
-    type,
-    sellerTin,
-    buyerTin,
-    parentId,
-    isCorrected,
-    role,
     effectiveDate,
-    rawDates,
-    amount: null,
-    transporterTin,
-    myTin: config.myTin || "",
   };
-
-  if (isCorrected && parentId && log) {
-    log("CORRECTION_LOGIC", `action=child_replaces parent_id=${parentId}`);
-  }
-
-  if (correctionContext.parentToChildId?.has(id)) {
-    const childId = correctionContext.parentToChildId.get(id);
-    if (log) {
-      log("CORRECTION_LOGIC", `action=excluded_parent child_id=${childId}`);
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: `replaced by corrected child ${childId || ""}`.trim(),
-    };
-  }
 
   if (!effectiveDate) {
     if (log) {
-      log("DATE_FILTER_OUT", 'reason="missing or invalid BEGIN_DATE"');
+      log("DATE_FILTER_OUT", 'reason="missing or invalid date"');
     }
     return {
       ...baseDecision,
       exclude: true,
-      reason: "missing or invalid BEGIN_DATE",
+      reason: "missing or invalid date",
     };
   }
 
@@ -1047,76 +983,11 @@ function determineExclusionReason(record, config, correctionContext = {}) {
     }
   }
 
-  if (!WAYBILL_ALLOWED_STATUSES.has(status)) {
-    if (log) {
-      log("STATUS_FILTER_OUT", `status=${status || "unknown"}`);
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: `status ${status || "unknown"} not counted`,
-    };
-  }
-
-  if (type !== WAYBILL_EXPECTED_TYPE) {
-    if (log) {
-      log("TYPE_FILTER_OUT", `type=${type || "unknown"}`);
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: `type ${type || "unknown"} not counted`,
-    };
-  }
-
-  if (!config.myTin) {
-    if (log) {
-      log("SELLER_FILTER_OUT", 'reason="MY_TIN not configured"');
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: "MY_TIN missing for seller filter",
-    };
-  }
-
-  if (!sellerTin || sellerTin !== config.myTin) {
-    if (log) {
-      log("SELLER_FILTER_OUT", `seller=${sellerTin || "missing"} my_tin=${config.myTin}`);
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: "seller TIN mismatch",
-    };
-  }
-
-  if (buyerTin && buyerTin === sellerTin) {
-    if (log) {
-      log("INTERNAL_MOVEMENT_OUT", `seller=${sellerTin}`);
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: "internal movement",
-    };
-  }
-
   const amount = normalizeFullAmount(record);
-  if (amount === null) {
-    if (log) {
-      log("AMOUNT_FILTER_OUT", 'reason="invalid FULL_AMOUNT"');
-    }
-    return {
-      ...baseDecision,
-      exclude: true,
-      reason: "invalid FULL_AMOUNT",
-    };
-  }
 
   return {
     ...baseDecision,
-    amount,
+    amount: Number.isFinite(amount) ? amount : 0,
   };
 }
 
@@ -1200,20 +1071,11 @@ function resolveRole(myTin, sellerTin, buyerTin, transporterTin) {
 
 function buildDebugEntry(record, decision) {
   const amount = Number.isFinite(decision.amount) ? Number(decision.amount.toFixed(2)) : null;
-  const sellerTin = decision.sellerTin ?? normalizeTin(getFirstValue(record, WAYBILL_SELLER_TIN_KEYS));
-  const buyerTin = decision.buyerTin ?? normalizeTin(getFirstValue(record, WAYBILL_BUYER_TIN_KEYS));
   return {
     ID: decision.id || resolveWaybillId(record) || "",
-    TYPE: decision.type || "",
-    STATUS: decision.status || "",
     EFFECTIVE_DATE: decision.effectiveDate || null,
     FULL_AMOUNT: amount,
-    SELLER_TIN: sellerTin,
-    BUYER_TIN: buyerTin,
-    PAR_ID: decision.parentId || "",
-    IS_CORRECTED: decision.isCorrected || false,
     EXCLUDED_REASON: decision.reason || null,
-    ROLE: decision.role || resolveRole(decision.myTin, sellerTin, buyerTin, decision.transporterTin),
     DATE_SOURCE: WAYBILL_DATE_SOURCE,
     RAW_DATES: {
       BEGIN_DATE:
