@@ -1,6 +1,9 @@
 const axios = require("axios");
 const { wrapper } = require("axios-cookiejar-support");
 const { CookieJar } = require("tough-cookie");
+const cheerio = require("cheerio");
+const fs = require("fs");
+const path = require("path");
 
 const RS_BASE_URL = "https://eservices.rs.ge";
 const RS_LOGIN_PATH = "/Login.aspx";
@@ -96,6 +99,13 @@ class RsSessionError extends Error {
   constructor(message) {
     super(message || "RS session expired");
     this.name = "RsSessionError";
+  }
+}
+
+class RsSessionExpiredError extends Error {
+  constructor(message) {
+    super(message || "RS session expired, got login page");
+    this.name = "RsSessionExpiredError";
   }
 }
 
@@ -242,22 +252,67 @@ function extractPageSession(html) {
   return { pageId, sessionId, currentTab };
 }
 
-function extractWaybillsPageMetadata(html) {
+function assertWaybillGridPage($) {
+  const hasGrid =
+    $('table[id*="WaybillGrid"]').length > 0 ||
+    $('div[id*="WaybillGrid"]').length > 0 ||
+    $('input[id*="WaybillPageSize"]').length > 0;
+
+  const isLogin =
+    $('input[name="userName"]').length > 0 ||
+    $('form[id*="loginForm"]').length > 0 ||
+    $('form[action*="Login"]').length > 0;
+
+  if (isLogin) {
+    throw new RsSessionExpiredError("RS session expired, got login page instead of waybills grid");
+  }
+
+  if (!hasGrid) {
+    throw new RsSchemaChangedError("Waybills grid not found on page");
+  }
+}
+
+async function dumpWaybillHtmlForDebug(html, context = {}) {
+  try {
+    const { su = "unknown", year = "na", month = "na" } = context;
+    const debugDir = path.join(process.cwd(), "tmp", "rs-debug");
+    await fs.promises.mkdir(debugDir, { recursive: true });
+    const fileName = `rs-waybills-${su}-${year}-${month}-${Date.now()}.html`;
+    const fullPath = path.join(debugDir, fileName);
+    await fs.promises.writeFile(fullPath, html, "utf8");
+    return fullPath;
+  } catch (err) {
+    console.error("[RS_GRID][Waybills][DEBUG_DUMP_FAILED]", err?.message || err);
+    return null;
+  }
+}
+
+async function extractWaybillsPageMetadata(html, context = {}) {
   if (typeof html !== "string" || !html.trim()) {
     const err = new RsSchemaChangedError("Waybills page HTML missing or invalid");
     err.htmlSnippet = typeof html === "string" ? html.slice(0, 200) : "";
     throw err;
   }
 
-  const PageID = extractHiddenInputValue(html, "PageID").trim();
-  const SessionID = extractHiddenInputValue(html, "SessionID").trim();
+  const $ = cheerio.load(html);
+  assertWaybillGridPage($);
+
+  const PageID =
+    $('input[id="PageID"]').attr("value") ||
+    $('input[name="ctl00$PageID"]').attr("value") ||
+    extractHiddenInputValue(html, "PageID");
+  const SessionID =
+    $('input[id="SessionID"]').attr("value") ||
+    $('input[name="ctl00$SessionID"]').attr("value") ||
+    extractHiddenInputValue(html, "SessionID");
 
   if (!PageID || !SessionID) {
     const snippet = html.slice(0, 500);
-    const err = new RsSchemaChangedError("Failed to extract page metadata for waybills");
+    const err = new RsSchemaChangedError("Waybills grid metadata not found; RS.ge DOM likely changed");
     err.htmlSnippet = snippet;
     err.pageID = PageID;
     err.sessionID = SessionID;
+    err.debugHtmlFile = await dumpWaybillHtmlForDebug(html, context);
     throw err;
   }
 
@@ -472,7 +527,7 @@ async function createRsSession(su, sp) {
   return { client, jar, su, tin: parseTinFromSu(su) };
 }
 
-async function fetchWaybillPageMeta(session) {
+async function fetchWaybillPageMeta(session, context = {}) {
   const pageResp = await session.client.get(RS_WAYBILL_PAGE, {
     headers: {
       Referer: `${RS_BASE_URL}/`,
@@ -491,12 +546,12 @@ async function fetchWaybillPageMeta(session) {
   if (isProbablyLoginPage(html)) {
     const snippet =
       typeof html === "string" ? html.slice(0, 500) : "[non-string waybill page response]";
-    const err = new RsSessionError("RS returned login shell for waybill page");
+    const err = new RsSessionExpiredError("RS returned login shell for waybill page");
     err.htmlSnippet = snippet;
     throw err;
   }
   try {
-    const meta = extractWaybillsPageMetadata(html);
+    const meta = await extractWaybillsPageMetadata(html, context);
     const currentTab =
       (typeof html === "string" &&
         (html.match(/currentTab["']?\s*[:=]\s*["']([^"']+)["']/i)?.[1] || "tab_given")) ||
@@ -508,6 +563,7 @@ async function fetchWaybillPageMeta(session) {
     console.error("[RS_GRID][Waybills][METADATA_PARSE_FAILED]", {
       reason: err?.message || "Failed to extract page metadata for waybills",
       snippet,
+      debugHtmlFile: err?.debugHtmlFile,
     });
     throw err;
   }
@@ -810,7 +866,11 @@ async function fetchRsGridTotalForMonth(opts) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const session = await createRsSession(opts.su, opts.plain_sp);
-      const pageMeta = await fetchWaybillPageMeta(session);
+      const pageMeta = await fetchWaybillPageMeta(session, {
+        su: opts.su,
+        year: opts.year,
+        month: opts.month,
+      });
       const payload = {
         PageID: pageMeta.pageId,
         SessionID: pageMeta.sessionId,
@@ -842,7 +902,7 @@ async function fetchRsGridTotalForMonth(opts) {
       return pickFullAmount(gridResponse, range);
     } catch (err) {
       lastError = err;
-      if (err instanceof RsSessionError) {
+      if (err instanceof RsSessionError || err instanceof RsSessionExpiredError) {
         console.warn(`[RS_GRID] Session error for ${opts.su}; re-authenticating`);
         continue;
       }
@@ -872,5 +932,6 @@ module.exports = {
   RsParseError,
   RsSchemaChangedError,
   RsSessionError,
+  RsSessionExpiredError,
   RsHtmlResponseError,
 };

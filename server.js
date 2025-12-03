@@ -14,6 +14,7 @@ const {
   RsParseError,
   RsSchemaChangedError,
   RsSessionError,
+  RsSessionExpiredError,
   RsHtmlResponseError,
 } = require("./rsGridClient");
 
@@ -1731,6 +1732,16 @@ function mapRsGridError(err) {
     return {
       status: 502,
       body: { success: false, code: "RS_SESSION", message: err.message || "RS session error" },
+    };
+  }
+  if (err instanceof RsSessionExpiredError) {
+    return {
+      status: 502,
+      body: {
+        success: false,
+        code: "RS_SESSION_EXPIRED",
+        message: err.message || "RS session expired or login required",
+      },
     };
   }
   if (err instanceof RsHtmlResponseError) {
