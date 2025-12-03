@@ -169,6 +169,27 @@ function parseHiddenValue(html, fieldId) {
   return match ? match[1] : "";
 }
 
+function extractHiddenInputValue(html, key) {
+  if (typeof html !== "string") return "";
+  const lowerKey = key.toLowerCase();
+  const inputRegex = /<input[^>]*>/gi;
+  let match;
+  while ((match = inputRegex.exec(html))) {
+    const tag = match[0];
+    const idMatch = tag.match(/id=["']?([^"'>\s]+)/i);
+    const nameMatch = tag.match(/name=["']?([^"'>\s]+)/i);
+    const idVal = idMatch && idMatch[1] ? idMatch[1].toLowerCase() : "";
+    const nameVal = nameMatch && nameMatch[1] ? nameMatch[1].toLowerCase() : "";
+    if (idVal.includes(lowerKey) || nameVal.includes(lowerKey)) {
+      const valueMatch = tag.match(/value=["']([^"']*)["']/i);
+      if (valueMatch && valueMatch[1] !== undefined) {
+        return valueMatch[1];
+      }
+    }
+  }
+  return "";
+}
+
 function extractPageSession(html) {
   const pageIdFromHidden = parseHiddenValue(html, "PageID");
   const sessionIdFromHidden = parseHiddenValue(html, "SessionID");
@@ -228,11 +249,8 @@ function extractWaybillsPageMetadata(html) {
     throw err;
   }
 
-  const pageIdMatch = html.match(/id=["']PageID["'][^>]*value=["']([^"']+)["']/i);
-  const sessionIdMatch = html.match(/id=["']SessionID["'][^>]*value=["']([^"']+)["']/i);
-
-  const PageID = pageIdMatch && pageIdMatch[1] ? pageIdMatch[1].trim() : "";
-  const SessionID = sessionIdMatch && sessionIdMatch[1] ? sessionIdMatch[1].trim() : "";
+  const PageID = extractHiddenInputValue(html, "PageID").trim();
+  const SessionID = extractHiddenInputValue(html, "SessionID").trim();
 
   if (!PageID || !SessionID) {
     const snippet = html.slice(0, 500);
