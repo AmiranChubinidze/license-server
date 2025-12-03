@@ -249,21 +249,58 @@ async function createRsSession(su, sp) {
     responseType: "text",
   });
 
-  if (isHtmlPayload(authResp.data, authResp.headers)) {
-    const { snippet, dataType } = extractHtmlSnippet(authResp.data, 500);
+  const rawAuth = authResp.data;
+  const contentType =
+    (authResp.headers && (authResp.headers["content-type"] || authResp.headers["Content-Type"])) ||
+    "";
+
+  let authBody = null;
+  if (typeof rawAuth === "string") {
+    const trimmed = rawAuth.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const normalized = normalizeRsResponse(parsed);
+        if (normalized && typeof normalized === "object") {
+          authBody = normalized;
+        }
+      } catch {
+        // fall through to HTML/error handling
+      }
+    }
+    const looksLikeHtml =
+      (trimmed.startsWith("<!DOCTYPE") ||
+        trimmed.startsWith("<html") ||
+        trimmed.startsWith("<")) ||
+      contentType.toLowerCase().includes("text/html");
+    if (!authBody && looksLikeHtml) {
+      const { snippet, dataType } = extractHtmlSnippet(rawAuth, 500);
+      const err = new RsHtmlResponseError("RS login returned HTML", {
+        htmlSnippet: snippet,
+        statusCode: authResp.status,
+        url: authResp.config?.url,
+        contentType,
+        dataType,
+      });
+      throw err;
+    }
+  } else if (isHtmlPayload(rawAuth, authResp.headers)) {
+    const { snippet, dataType } = extractHtmlSnippet(rawAuth, 500);
     const err = new RsHtmlResponseError("RS login returned HTML", {
       htmlSnippet: snippet,
       statusCode: authResp.status,
       url: authResp.config?.url,
-      contentType:
-        (authResp.headers && (authResp.headers["content-type"] || authResp.headers["Content-Type"])) ||
-        "",
+      contentType,
       dataType,
     });
     throw err;
+  } else {
+    const normalized = normalizeRsResponse(rawAuth);
+    if (normalized && typeof normalized === "object") {
+      authBody = normalized;
+    }
   }
 
-  const authBody = normalizeRsResponse(authResp.data);
   if (!authBody) {
     throw new RsAuthError("Empty RS authentication response");
   }
