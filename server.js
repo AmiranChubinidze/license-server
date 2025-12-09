@@ -2236,7 +2236,21 @@ app.post("/waybill/total", async (req, res) => {
     const paddedMonth = String(Number(bodyMonth)).padStart(2, "0");
     monthKey = `${bodyYear}-${paddedMonth}`;
   }
-  const range = buildDateRange(monthKey);
+
+  let yearNum = null;
+  let monthNum = null;
+  if (typeof monthKey === "string" && /^\d{4}-\d{2}$/.test(monthKey)) {
+    const [y, m] = monthKey.split("-").map(Number);
+    yearNum = y;
+    monthNum = m;
+  } else if (Number.isInteger(Number(bodyYear)) && Number.isInteger(Number(bodyMonth))) {
+    yearNum = Number(bodyYear);
+    monthNum = Number(bodyMonth);
+  }
+
+  if (!Number.isInteger(yearNum) || !Number.isInteger(monthNum)) {
+    return res.status(400).json({ success: false, message: "Invalid or missing month/year" });
+  }
 
   let user;
   try {
@@ -2257,18 +2271,19 @@ app.post("/waybill/total", async (req, res) => {
     }
     filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
 
-    const result = await fetchWaybillTotal(
-      { su: user.su, sp: effectiveSp },
-      monthKey,
-      { filterConfig }
-    );
-    const totalValue =
-      result && typeof result === "object" && Number.isFinite(result.total) ? result.total : 0;
+    const { total, rsStartDate, rsEndDate } = await fetchRsGridTotalForMonth({
+      su: user.su,
+      plain_sp: effectiveSp,
+      year: yearNum,
+      month: monthNum,
+      filterConfig, // not used by grid client today
+    });
+    const totalValue = Number.isFinite(total) ? total : 0;
     return res.json({
       success: true,
       total: Number(totalValue.toFixed(2)),
-      from: range.start,
-      to: range.end,
+      from: rsStartDate,
+      to: rsEndDate,
     });
   } catch (err) {
     if (err instanceof SoapDisabledError) {
@@ -2298,6 +2313,225 @@ app.post("/waybill/total", async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: err?.message || "Failed to calculate total" });
+  }
+});
+
+// SOAP total endpoint (legacy)
+app.post("/waybill/total-soap", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const token = extractToken(req);
+  const debugMode = parseBoolean(req.query?.debug);
+  let filterConfig = debugMode
+    ? buildWaybillFilterConfig({ debugLogs: true })
+    : BASE_WAYBILL_FILTER_CONFIG;
+
+  if (!token) {
+    return res.status(400).json({ success: false, message: "Missing token" });
+  }
+
+  const bodyMonth = req.body?.month;
+  const bodyYear = req.body?.year;
+  let monthKey = typeof bodyMonth === "string" ? bodyMonth : undefined;
+  if (!monthKey && Number.isInteger(Number(bodyYear)) && Number.isInteger(Number(bodyMonth))) {
+    const paddedMonth = String(Number(bodyMonth)).padStart(2, "0");
+    monthKey = `${bodyYear}-${paddedMonth}`;
+  }
+
+  let yearNum = null;
+  let monthNum = null;
+  if (typeof monthKey === "string" && /^\d{4}-\d{2}$/.test(monthKey)) {
+    const [y, m] = monthKey.split("-").map(Number);
+    yearNum = y;
+    monthNum = m;
+  } else if (Number.isInteger(Number(bodyYear)) && Number.isInteger(Number(bodyMonth))) {
+    yearNum = Number(bodyYear);
+    monthNum = Number(bodyMonth);
+  }
+
+  if (!Number.isInteger(yearNum) || !Number.isInteger(monthNum)) {
+    return res.status(400).json({ success: false, message: "Invalid or missing month/year" });
+  }
+
+  const range = buildDateRange(monthKey);
+
+  try {
+    const decoded = decodeToken(token);
+    const user = await findApprovedUser(decoded.su);
+
+    if (!user || !user.active) {
+      return res.status(401).json({ success: false, message: "User revoked or not found" });
+    }
+
+    const effectiveSp = (user.plain_sp || "").trim();
+    if (!effectiveSp) {
+      return res.status(401).json({ success: false, message: "Missing SP for user" });
+    }
+    const myTin = normalizeTin(user.tin);
+    if (!myTin) {
+      return res.status(400).json({ success: false, message: "TIN missing for user" });
+    }
+    filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
+
+    const result = await fetchWaybillTotal(
+      { su: user.su, sp: effectiveSp },
+      monthKey,
+      { filterConfig }
+    );
+    const totalValue =
+      result && typeof result === "object" && Number.isFinite(result.total) ? result.total : 0;
+    return res.json({
+      success: true,
+      total: Number(totalValue.toFixed(2)),
+      from: range.start,
+      to: range.end,
+      source: "soap",
+    });
+  } catch (err) {
+    if (err instanceof SoapDisabledError) {
+      return res.status(503).json({
+        success: false,
+        code: "SOAP_DISABLED",
+        message:
+          "SOAP waybill service is not available for this account. Use RS grid or manual reconciliation.",
+      });
+    }
+    if (err?.isSoapError) {
+      return res.status(502).json({
+        success: false,
+        message: "RS.ge SOAP error",
+        details: err.message || "SOAP request failed",
+      });
+    }
+
+    const isJwtError =
+      err?.name === "JsonWebTokenError" ||
+      err?.name === "TokenExpiredError" ||
+      err?.name === "NotBeforeError";
+    if (isJwtError) {
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
+
+    return res
+      .status(500)
+      .json({ success: false, message: err?.message || "Failed to calculate total" });
+  }
+});
+
+// Compare SOAP vs grid totals for the same month
+app.post("/waybill/total-compare", async (req, res) => {
+  if (!ensureSupabase(res)) return;
+  const token = extractToken(req);
+  const debugMode = parseBoolean(req.query?.debug);
+  let filterConfig = debugMode
+    ? buildWaybillFilterConfig({ debugLogs: true })
+    : BASE_WAYBILL_FILTER_CONFIG;
+
+  if (!token) {
+    return res.status(400).json({ success: false, message: "Missing token" });
+  }
+
+  const bodyMonth = req.body?.month;
+  const bodyYear = req.body?.year;
+  let monthKey = typeof bodyMonth === "string" ? bodyMonth : undefined;
+  if (!monthKey && Number.isInteger(Number(bodyYear)) && Number.isInteger(Number(bodyMonth))) {
+    const paddedMonth = String(Number(bodyMonth)).padStart(2, "0");
+    monthKey = `${bodyYear}-${paddedMonth}`;
+  }
+
+  let yearNum = null;
+  let monthNum = null;
+  if (typeof monthKey === "string" && /^\d{4}-\d{2}$/.test(monthKey)) {
+    const [y, m] = monthKey.split("-").map(Number);
+    yearNum = y;
+    monthNum = m;
+  } else if (Number.isInteger(Number(bodyYear)) && Number.isInteger(Number(bodyMonth))) {
+    yearNum = Number(bodyYear);
+    monthNum = Number(bodyMonth);
+  }
+
+  if (!Number.isInteger(yearNum) || !Number.isInteger(monthNum)) {
+    return res.status(400).json({ success: false, message: "Invalid or missing month/year" });
+  }
+
+  const range = buildDateRange(monthKey);
+
+  try {
+    const decoded = decodeToken(token);
+    const user = await findApprovedUser(decoded.su);
+
+    if (!user || !user.active) {
+      return res.status(401).json({ success: false, message: "User revoked or not found" });
+    }
+
+    const effectiveSp = (user.plain_sp || "").trim();
+    if (!effectiveSp) {
+      return res.status(401).json({ success: false, message: "Missing SP for user" });
+    }
+    const myTin = normalizeTin(user.tin);
+    if (!myTin) {
+      return res.status(400).json({ success: false, message: "TIN missing for user" });
+    }
+    filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
+
+    const grid = await fetchRsGridTotalForMonth({
+      su: user.su,
+      plain_sp: effectiveSp,
+      year: yearNum,
+      month: monthNum,
+      filterConfig,
+    });
+
+    const soap = await fetchWaybillTotal(
+      { su: user.su, sp: effectiveSp },
+      monthKey,
+      { filterConfig }
+    );
+
+    const gridTotal = Number.isFinite(grid?.total) ? grid.total : 0;
+    const soapTotal = Number.isFinite(soap?.total) ? soap.total : 0;
+
+    return res.json({
+      success: true,
+      grid: {
+        total: Number(gridTotal.toFixed(2)),
+        from: grid?.rsStartDate || range.start,
+        to: grid?.rsEndDate || range.end,
+      },
+      soap: {
+        total: Number(soapTotal.toFixed(2)),
+        from: range.start,
+        to: range.end,
+      },
+      diff: Number((gridTotal - soapTotal).toFixed(2)),
+    });
+  } catch (err) {
+    if (err instanceof SoapDisabledError) {
+      return res.status(503).json({
+        success: false,
+        code: "SOAP_DISABLED",
+        message:
+          "SOAP waybill service is not available for this account. Use RS grid or manual reconciliation.",
+      });
+    }
+    if (err?.isSoapError) {
+      return res.status(502).json({
+        success: false,
+        message: "RS.ge SOAP error",
+        details: err.message || "SOAP request failed",
+      });
+    }
+
+    const isJwtError =
+      err?.name === "JsonWebTokenError" ||
+      err?.name === "TokenExpiredError" ||
+      err?.name === "NotBeforeError";
+    if (isJwtError) {
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
+
+    return res
+      .status(500)
+      .json({ success: false, message: err?.message || "Failed to compare totals" });
   }
 });
 
