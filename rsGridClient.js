@@ -274,7 +274,13 @@ function assertWaybillGridPage($) {
   }
 
   if (!hasGrid) {
-    throw new RsSchemaChangedError("Waybills grid not found on page");
+    const err = new RsSchemaChangedError("Waybills grid not found on page");
+    try {
+      err.debugHtmlFile = await dumpWaybillHtmlForDebug($.html ? $.html() : "", {});
+    } catch (_) {
+      // ignore dump errors
+    }
+    throw err;
   }
 }
 
@@ -301,7 +307,14 @@ async function extractWaybillsPageMetadata(html, context = {}) {
   }
 
   const $ = cheerio.load(html);
-  assertWaybillGridPage($);
+  try {
+    assertWaybillGridPage($);
+  } catch (err) {
+    if (err instanceof RsSchemaChangedError) {
+      err.debugHtmlFile = err.debugHtmlFile || (await dumpWaybillHtmlForDebug(html, context));
+    }
+    throw err;
+  }
 
   const PageID =
     $('input[id="PageID"]').attr("value") ||
