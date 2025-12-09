@@ -12,7 +12,8 @@ const RS_WAYBILL_QUERY = (process.env.RS_WAYBILL_QUERY || "").trim();
 const RS_AUTH_PATH = "/WebServices/hsUsers.ashx/Authenticate";
 const RS_GRID_PATH = "/WebServices/hsWaybill.ashx/GrdWaybills";
 const RS_TIMEOUT_MS = 30000;
-const USER_AGENT = "AmnairiRS-LicenseServer/1.0";
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const RS_DATA_TYPES = {
   string: 0,
@@ -149,6 +150,8 @@ function createHttpClient(jar) {
       timeout: RS_TIMEOUT_MS,
       headers: {
         "User-Agent": USER_AGENT,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ka-GE,ka;q=0.9,en;q=0.8",
       },
       validateStatus: (status) => status >= 200 && status < 600,
     })
@@ -586,13 +589,20 @@ async function fetchWaybillPageMeta(session, context = {}) {
   const waybillUrl = buildWaybillUrl(waybillQuery);
   console.log("[RS_NAV]", waybillUrl);
 
-  const pageResp = await session.client.get(waybillUrl, {
+  const requestConfig = {
+    method: "GET",
+    url: waybillUrl,
     headers: {
-      Referer: `${RS_BASE_URL}/`,
-      "User-Agent": USER_AGENT,
-      "Accept-Language": "ka,en;q=0.9",
+      Referer: `${RS_BASE_URL}/MainPage.aspx`,
     },
+  };
+  console.log("[RS_NAV][REQUEST_CONFIG]", {
+    method: requestConfig.method,
+    url: requestConfig.url,
+    headers: requestConfig.headers,
   });
+
+  const pageResp = await session.client(requestConfig);
 
   if (pageResp.status === 401 || pageResp.status === 403) {
     throw new RsSessionError("RS session unauthorized for waybill page");
@@ -601,6 +611,9 @@ async function fetchWaybillPageMeta(session, context = {}) {
     throw new RsHttpError("RS waybill page unavailable", pageResp.status);
   }
   const html = pageResp.data || "";
+  if (typeof html === "string") {
+    console.log("[RS_NAV][HTML_SNIPPET]", html.slice(0, 200));
+  }
   if (isProbablyLoginPage(html)) {
     const snippet =
       typeof html === "string" ? html.slice(0, 500) : "[non-string waybill page response]";
