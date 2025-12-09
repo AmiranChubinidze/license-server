@@ -7,7 +7,7 @@ const path = require("path");
 
 const RS_BASE_URL = "https://eservices.rs.ge";
 const RS_LOGIN_PATH = "/Login.aspx";
-const RS_WAYBILL_PAGE = "/WB/Waybills.aspx";
+const RS_WAYBILL_PAGE = "/WayBills.aspx";
 const RS_AUTH_PATH = "/WebServices/hsUsers.ashx/Authenticate";
 const RS_GRID_PATH = "/WebServices/hsWaybill.ashx/GrdWaybills";
 const RS_TIMEOUT_MS = 30000;
