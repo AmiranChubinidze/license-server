@@ -2717,14 +2717,26 @@ app.get("/health", (_req, res) => {
 app.use(express.static(__dirname));
 app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "admin.html")));
 
-// Temporary helper to inspect last waybills HTML dump
+// Temporary helper to inspect the most recent waybills HTML dump
 app.get("/debug/last-waybills-html", (_req, res) => {
   try {
     const fs = require("fs");
-    const htmlPath =
-      "/opt/render/project/src/tmp/rs-debug/rs-waybills-amnairi:412761097-2025-11-1765290240415.html";
-    const content = fs.readFileSync(htmlPath, "utf8");
+    const dirPath = path.join(__dirname, "tmp", "rs-debug");
+    const files = fs.existsSync(dirPath)
+      ? fs.readdirSync(dirPath).filter((f) => f.startsWith("rs-waybills-") && f.endsWith(".html"))
+      : [];
+    if (!files.length) {
+      return res.status(404).send("No waybills debug HTML files found");
+    }
+    const latest = files
+      .map((name) => ({
+        name,
+        time: fs.statSync(path.join(dirPath, name)).mtimeMs,
+      }))
+      .sort((a, b) => b.time - a.time)[0].name;
+    const content = fs.readFileSync(path.join(dirPath, latest), "utf8");
     res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("X-Debug-Waybills-File", latest);
     return res.send(content);
   } catch (err) {
     console.error("[DEBUG][last-waybills-html] Failed to read file:", err?.message || err);
