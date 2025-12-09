@@ -258,7 +258,7 @@ function extractPageSession(html) {
   return { pageId, sessionId, currentTab };
 }
 
-function assertWaybillGridPage($) {
+async function assertWaybillGridPage($, context = {}) {
   const hasGrid =
     $('table[id*="WaybillGrid"]').length > 0 ||
     $('div[id*="WaybillGrid"]').length > 0 ||
@@ -276,7 +276,7 @@ function assertWaybillGridPage($) {
   if (!hasGrid) {
     const err = new RsSchemaChangedError("Waybills grid not found on page");
     try {
-      err.debugHtmlFile = await dumpWaybillHtmlForDebug($.html ? $.html() : "", {});
+      err.debugHtmlFile = await dumpWaybillHtmlForDebug($.html ? $.html() : "", context);
     } catch (_) {
       // ignore dump errors
     }
@@ -308,7 +308,7 @@ async function extractWaybillsPageMetadata(html, context = {}) {
 
   const $ = cheerio.load(html);
   try {
-    assertWaybillGridPage($);
+    await assertWaybillGridPage($, context);
   } catch (err) {
     if (err instanceof RsSchemaChangedError) {
       err.debugHtmlFile = err.debugHtmlFile || (await dumpWaybillHtmlForDebug(html, context));
