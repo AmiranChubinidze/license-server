@@ -154,6 +154,12 @@ function createHttpClient(jar) {
   );
 }
 
+function maskSecret(value) {
+  if (typeof value !== "string" || !value.length) return "***";
+  if (value.length <= 4) return "***";
+  return `${value.slice(0, 2)}***${value.slice(-2)}`;
+}
+
 function buildMonthRange(year, month) {
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
     throw new RsParseError("Invalid year or month");
@@ -456,6 +462,11 @@ async function createRsSession(su, sp) {
     latitude: null,
     longitude: null,
   };
+
+  console.log("[RS_AUTH][REQUEST]", {
+    username: loginPayload.username,
+    sp_mask: maskSecret(sp),
+  });
 
   const authResp = await client.post(RS_AUTH_PATH, loginPayload, {
     headers: {

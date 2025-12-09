@@ -377,6 +377,11 @@ async function findApprovedUser(su) {
   }
   user.tin = user.tin || "";
   user.company_name = user.company_name || "";
+  console.log("[AUTH][findApprovedUser]", {
+    su: user.su,
+    plain_sp_mask: maskSecret(user.plain_sp || ""),
+    status: user.status,
+  });
   return user;
 }
 
@@ -1422,6 +1427,12 @@ function parseBoolean(value) {
   return false;
 }
 
+function maskSecret(value) {
+  if (typeof value !== "string" || !value.length) return "***";
+  if (value.length <= 4) return "***";
+  return `${value.slice(0, 2)}***${value.slice(-2)}`;
+}
+
 function normalizeTin(value) {
   if (value === null || value === undefined) {
     return "";
@@ -2271,6 +2282,13 @@ app.post("/waybill/total", async (req, res) => {
     }
     filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
 
+    console.log("[WAYBILL][TOTAL][GRID_INPUT]", {
+      su: user.su,
+      plain_sp_mask: maskSecret(effectiveSp),
+      year: yearNum,
+      month: monthNum,
+    });
+
     const { total, rsStartDate, rsEndDate } = await fetchRsGridTotalForMonth({
       su: user.su,
       plain_sp: effectiveSp,
@@ -2372,6 +2390,13 @@ app.post("/waybill/total-soap", async (req, res) => {
     }
     filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
 
+    console.log("[WAYBILL][TOTAL_SOAP][INPUT]", {
+      su: user.su,
+      plain_sp_mask: maskSecret(effectiveSp),
+      year: yearNum,
+      month: monthNum,
+    });
+
     const result = await fetchWaybillTotal(
       { su: user.su, sp: effectiveSp },
       monthKey,
@@ -2472,6 +2497,13 @@ app.post("/waybill/total-compare", async (req, res) => {
       return res.status(400).json({ success: false, message: "TIN missing for user" });
     }
     filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
+
+    console.log("[WAYBILL][TOTAL_COMPARE][INPUT]", {
+      su: user.su,
+      plain_sp_mask: maskSecret(effectiveSp),
+      year: yearNum,
+      month: monthNum,
+    });
 
     const grid = await fetchRsGridTotalForMonth({
       su: user.su,
@@ -2697,6 +2729,7 @@ app.use((err, _req, res, _next) => {
 const PORT = process.env.PORT || 3000;
 
 async function initializeRuntime() {
+  console.log("[ENV] DATABASE_URL set:", Boolean(process.env.DATABASE_URL));
   await autodetectSoapDateKey();
 }
 
