@@ -154,6 +154,25 @@ function createHttpClient(jar) {
   );
 }
 
+function logCookies(jar, label) {
+  return new Promise((resolve) => {
+    try {
+      jar.getCookies(RS_BASE_URL, (err, cookies) => {
+        if (err) {
+          console.warn(`[RS_COOKIES][${label}] failed to read cookies`, err?.message || err);
+          return resolve();
+        }
+        const data = cookies.map((c) => `${c.key}=${c.value}`);
+        console.log(`[RS_COOKIES][${label}]`, data);
+        resolve();
+      });
+    } catch (err) {
+      console.warn(`[RS_COOKIES][${label}] unexpected error`, err?.message || err);
+      resolve();
+    }
+  });
+}
+
 function maskSecret(value) {
   if (typeof value !== "string" || !value.length) return "***";
   if (value.length <= 4) return "***";
@@ -452,6 +471,8 @@ async function createRsSession(su, sp) {
     },
   });
 
+  await logCookies(jar, "after-Login.aspx");
+
   if (loginPageResp.status >= 500) {
     throw new RsHttpError("RS login page unavailable", loginPageResp.status);
   }
@@ -547,6 +568,8 @@ async function createRsSession(su, sp) {
     await setRsCookie(jar, "chatToken", authBody.chat_token);
   }
   await setRsCookie(jar, "isEmp", "0");
+
+  await logCookies(jar, "after-Authenticate");
 
   return { client, jar, su, tin: parseTinFromSu(su) };
 }
