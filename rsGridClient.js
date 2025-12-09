@@ -8,6 +8,7 @@ const path = require("path");
 const RS_BASE_URL = "https://eservices.rs.ge";
 const RS_LOGIN_PATH = "/Login.aspx";
 const RS_WAYBILL_PAGE = "/WayBills.aspx";
+const RS_WAYBILL_QUERY = (process.env.RS_WAYBILL_QUERY || "").trim();
 const RS_AUTH_PATH = "/WebServices/hsUsers.ashx/Authenticate";
 const RS_GRID_PATH = "/WebServices/hsWaybill.ashx/GrdWaybills";
 const RS_TIMEOUT_MS = 30000;
@@ -171,6 +172,12 @@ function logCookies(jar, label) {
       resolve();
     }
   });
+}
+
+function buildWaybillUrl(queryString) {
+  const qs = (queryString || RS_WAYBILL_QUERY || "").trim().replace(/^\?/, "");
+  if (!qs) return RS_WAYBILL_PAGE;
+  return `${RS_WAYBILL_PAGE}?${qs}`;
 }
 
 function maskSecret(value) {
@@ -575,7 +582,11 @@ async function createRsSession(su, sp) {
 }
 
 async function fetchWaybillPageMeta(session, context = {}) {
-  const pageResp = await session.client.get(RS_WAYBILL_PAGE, {
+  const waybillQuery = context.waybillQuery || RS_WAYBILL_QUERY;
+  const waybillUrl = buildWaybillUrl(waybillQuery);
+  console.log("[RS_NAV]", waybillUrl);
+
+  const pageResp = await session.client.get(waybillUrl, {
     headers: {
       Referer: `${RS_BASE_URL}/`,
       "User-Agent": USER_AGENT,
@@ -917,6 +928,7 @@ async function fetchRsGridTotalForMonth(opts) {
         su: opts.su,
         year: opts.year,
         month: opts.month,
+        waybillQuery: opts.waybillQuery,
       });
       const payload = {
         PageID: pageMeta.pageId,
