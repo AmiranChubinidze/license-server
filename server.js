@@ -9,6 +9,7 @@ const xml2js = require("xml2js");
 const { supabase } = require("./supabaseClient");
 const {
   fetchRsGridTotalForMonth,
+  fetchRsGridTotalFromCookies,
   RsAuthError,
   RsHttpError,
   RsParseError,
@@ -2226,111 +2227,54 @@ app.post("/validateToken", async (req, res) => {
   }
 });
 
-// Primary production endpoint: SOAP strict total for the given month.
+// Primary production endpoint: grid total using existing RS browser session cookies.
 app.post("/waybill/total", async (req, res) => {
-  if (!ensureSupabase(res)) return;
-  const token = extractToken(req);
-  const debugMode = parseBoolean(req.query?.debug);
-  let filterConfig = debugMode
-    ? buildWaybillFilterConfig({ debugLogs: true })
-    : BASE_WAYBILL_FILTER_CONFIG;
+  const rsCookieHeader = (req.body?.rsCookieHeader || "").trim();
+  const yearNum = Number(req.body?.year);
+  const monthNum = Number(req.body?.month);
 
-  if (!token) {
-    return res.status(400).json({ success: false, message: "Missing token" });
+  if (!rsCookieHeader) {
+    return res.status(400).json({ success: false, message: "Missing rsCookieHeader" });
   }
-
-  // month can be provided as "YYYY-MM" or via year/month numeric fields
-  const bodyMonth = req.body?.month;
-  const bodyYear = req.body?.year;
-  let monthKey = typeof bodyMonth === "string" ? bodyMonth : undefined;
-  if (!monthKey && Number.isInteger(Number(bodyYear)) && Number.isInteger(Number(bodyMonth))) {
-    const paddedMonth = String(Number(bodyMonth)).padStart(2, "0");
-    monthKey = `${bodyYear}-${paddedMonth}`;
-  }
-
-  let yearNum = null;
-  let monthNum = null;
-  if (typeof monthKey === "string" && /^\d{4}-\d{2}$/.test(monthKey)) {
-    const [y, m] = monthKey.split("-").map(Number);
-    yearNum = y;
-    monthNum = m;
-  } else if (Number.isInteger(Number(bodyYear)) && Number.isInteger(Number(bodyMonth))) {
-    yearNum = Number(bodyYear);
-    monthNum = Number(bodyMonth);
-  }
-
-  if (!Number.isInteger(yearNum) || !Number.isInteger(monthNum)) {
+  if (!Number.isInteger(yearNum) || !Number.isInteger(monthNum) || monthNum < 1 || monthNum > 12) {
     return res.status(400).json({ success: false, message: "Invalid or missing month/year" });
   }
 
-  let user;
   try {
-    const decoded = decodeToken(token);
-    user = await findApprovedUser(decoded.su);
-
-    if (!user || !user.active) {
-      return res.status(401).json({ success: false, message: "User revoked or not found" });
-    }
-
-    const effectiveSp = (user.plain_sp || "").trim();
-    if (!effectiveSp) {
-      return res.status(401).json({ success: false, message: "Missing SP for user" });
-    }
-    const myTin = normalizeTin(user.tin);
-    if (!myTin) {
-      return res.status(400).json({ success: false, message: "TIN missing for user" });
-    }
-    filterConfig = buildWaybillFilterConfig({ ...filterConfig, myTin });
-
-    console.log("[WAYBILL][TOTAL][GRID_INPUT]", {
-      su: user.su,
-      plain_sp_mask: maskSecret(effectiveSp),
+    const result = await fetchRsGridTotalFromCookies({
+      rsCookieHeader,
       year: yearNum,
       month: monthNum,
     });
-
-    const { total, rsStartDate, rsEndDate } = await fetchRsGridTotalForMonth({
-      su: user.su,
-      plain_sp: effectiveSp,
-      year: yearNum,
-      month: monthNum,
-      filterConfig, // not used by grid client today
-    });
-    const totalValue = Number.isFinite(total) ? total : 0;
     return res.json({
       success: true,
-      total: Number(totalValue.toFixed(2)),
-      from: rsStartDate,
-      to: rsEndDate,
+      total: Number(result.total.toFixed(2)),
+      from: result.rsStartDate,
+      to: result.rsEndDate,
+      details: result.details,
+      source: "grid-cookie",
     });
   } catch (err) {
-    if (err instanceof SoapDisabledError) {
-      return res.status(503).json({
-        success: false,
-        code: "SOAP_DISABLED",
-        message:
-          "SOAP waybill service is not available for this account. Use RS grid or manual reconciliation.",
-      });
-    }
-    if (err?.isSoapError) {
+    if (err instanceof RsSessionExpiredError || err instanceof RsSessionError) {
       return res.status(502).json({
         success: false,
-        message: "RS.ge SOAP error",
-        details: err.message || "SOAP request failed",
+        code: "RS_SESSION_EXPIRED",
+        message: "RS session expired or login required",
       });
     }
-
-    const isJwtError =
-      err?.name === "JsonWebTokenError" ||
-      err?.name === "TokenExpiredError" ||
-      err?.name === "NotBeforeError";
-    if (isJwtError) {
-      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    if (err instanceof RsSchemaChangedError) {
+      return res.status(500).json({
+        success: false,
+        code: "RS_SCHEMA_CHANGED",
+        message: "Waybills grid layout changed; debug HTML captured",
+        debugHtmlFile: err.debugHtmlFile,
+      });
     }
-
-    return res
-      .status(500)
-      .json({ success: false, message: err?.message || "Failed to calculate total" });
+    return res.status(500).json({
+      success: false,
+      code: "INTERNAL_ERROR",
+      message: err?.message || "Unexpected error while fetching RS grid totals",
+    });
   }
 });
 

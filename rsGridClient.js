@@ -177,6 +177,31 @@ function logCookies(jar, label) {
   });
 }
 
+async function createSessionFromCookieHeader(rsCookieHeader) {
+  const jar = new CookieJar();
+  const baseUrl = RS_BASE_URL;
+  if (rsCookieHeader && typeof rsCookieHeader === "string") {
+    const parts = rsCookieHeader
+      .split(";")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    for (const part of parts) {
+      try {
+        await new Promise((resolve, reject) => {
+          jar.setCookie(part, baseUrl, (err) => {
+            if (err) return reject(err);
+            resolve();
+          });
+        });
+      } catch (err) {
+        console.warn("[RS_COOKIES][SET_FROM_HEADER] failed for", part, err?.message || err);
+      }
+    }
+  }
+  const client = createHttpClient(jar);
+  return { client, jar };
+}
+
 function buildWaybillUrl(queryString) {
   const qs = (queryString || RS_WAYBILL_QUERY || "").trim().replace(/^\?/, "");
   if (!qs) return RS_WAYBILL_PAGE;
@@ -951,8 +976,60 @@ async function runWithRetry(fn, attempts, onRetry) {
   throw lastErr;
 }
 
+async function fetchRsGridTotalForMonthWithSession(session, opts) {
+  const range = buildMonthRange(opts.year, opts.month);
+  const pageMeta = await fetchWaybillPageMeta(session, {
+    su: opts.su,
+    year: opts.year,
+    month: opts.month,
+    waybillQuery: opts.waybillQuery,
+  });
+  const payload = {
+    PageID: pageMeta.pageId,
+    currentTab: pageMeta.currentTab || "tab_given",
+    currentTabNotif: "",
+    startRowIndex: 0,
+    maximumRows: "7",
+    sortExpression: "",
+    filterExpression: buildFilterExpression(range),
+    summaryFields: [
+      {
+        FieldName: "FULL_AMOUNT",
+        SummaryFunction: 1,
+        SummaryFraction: 2,
+        SummaryField: null,
+        OnBeforeShow: null,
+      },
+      {
+        FieldName: "TRANSPORT_COAST",
+        SummaryFunction: 1,
+        SummaryFraction: 2,
+        SummaryField: null,
+        OnBeforeShow: null,
+      },
+    ],
+    startDate: range.start,
+    endDate: range.end,
+    ignorePeriod: false,
+    gridData: 1,
+    SessionID: pageMeta.sessionId,
+  };
+
+  const gridResponse = await runWithRetry(
+    () => requestGrid(session, payload),
+    2,
+    (err, retryAttempt) => {
+      console.warn(
+        `[RS_GRID] Retry ${retryAttempt} for ${opts.su || "cookie-session"} due to ${err?.message || err}`
+      );
+    }
+  );
+
+  return pickFullAmount(gridResponse, range);
+}
+
 /**
- * Fetch the strict grid total for a given month from RS Waybills.
+ * Fetch the strict grid total for a given month from RS Waybills using SU/SP login.
  * @param {{ su: string; plain_sp: string; year: number; month: number; }} opts
  * @returns {Promise<RsGridTotalResult>}
  */
@@ -963,54 +1040,7 @@ async function fetchRsGridTotalForMonth(opts) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const session = await createRsSession(opts.su, opts.plain_sp);
-      const pageMeta = await fetchWaybillPageMeta(session, {
-        su: opts.su,
-        year: opts.year,
-        month: opts.month,
-        waybillQuery: opts.waybillQuery,
-      });
-      const payload = {
-        PageID: pageMeta.pageId,
-        currentTab: pageMeta.currentTab || "tab_given",
-        currentTabNotif: "",
-        startRowIndex: 0,
-        maximumRows: "7",
-        sortExpression: "",
-        filterExpression: buildFilterExpression(range),
-        summaryFields: [
-          {
-            FieldName: "FULL_AMOUNT",
-            SummaryFunction: 1,
-            SummaryFraction: 2,
-            SummaryField: null,
-            OnBeforeShow: null,
-          },
-          {
-            FieldName: "TRANSPORT_COAST",
-            SummaryFunction: 1,
-            SummaryFraction: 2,
-            SummaryField: null,
-            OnBeforeShow: null,
-          },
-        ],
-        startDate: range.start,
-        endDate: range.end,
-        ignorePeriod: false,
-        gridData: 1,
-        SessionID: pageMeta.sessionId,
-      };
-
-      const gridResponse = await runWithRetry(
-        () => requestGrid(session, payload),
-        2,
-        (err, retryAttempt) => {
-          console.warn(
-            `[RS_GRID] Retry ${retryAttempt} for ${opts.su} due to ${err?.message || err}`
-          );
-        }
-      );
-
-      return pickFullAmount(gridResponse, range);
+      return await fetchRsGridTotalForMonthWithSession(session, opts);
     } catch (err) {
       lastError = err;
       if (err instanceof RsSessionError || err instanceof RsSessionExpiredError) {
@@ -1022,6 +1052,11 @@ async function fetchRsGridTotalForMonth(opts) {
   }
 
   throw lastError || new Error("Failed to fetch RS grid total");
+}
+
+async function fetchRsGridTotalFromCookies(opts) {
+  const session = await createSessionFromCookieHeader(opts.rsCookieHeader || "");
+  return fetchRsGridTotalForMonthWithSession(session, opts);
 }
 
 // Dev helper for local verification:
@@ -1037,6 +1072,9 @@ async function fetchRsGridTotalForMonth(opts) {
 
 module.exports = {
   fetchRsGridTotalForMonth,
+  fetchRsGridTotalFromCookies,
+  fetchRsGridTotalForMonthWithSession,
+  createSessionFromCookieHeader,
   createRsSession,
   RsAuthError,
   RsHttpError,
