@@ -288,28 +288,36 @@ function extractPageSession(html) {
 }
 
 async function assertWaybillGridPage($, context = {}) {
-  const hasGrid =
-    $('table[id*="WaybillGrid"]').length > 0 ||
-    $('div[id*="WaybillGrid"]').length > 0 ||
-    $('input[id*="WaybillPageSize"]').length > 0;
-
-  const isLogin =
+  const hasLoginForm =
     $('input[name="userName"]').length > 0 ||
     $('form[id*="loginForm"]').length > 0 ||
     $('form[action*="Login"]').length > 0;
+  const hasPassword = $('input[type="password"]').length > 0;
+  const hasOldGridMarkers =
+    $('table[id*="WaybillGrid"]').length > 0 ||
+    $('div[id*="WaybillGrid"]').length > 0 ||
+    $('input[id*="WaybillPageSize"]').length > 0;
+  const hasPageIdHidden =
+    $('input[id="PageID"]').length > 0 || $('input[name="ctl00$PageID"]').length > 0;
+  const hasSessionIdHidden =
+    $('input[id="SessionID"]').length > 0 || $('input[name="ctl00$SessionID"]').length > 0;
 
-  if (isLogin) {
+  console.log("[RS_NAV][PAGE_CHECK]", {
+    hasLoginForm,
+    hasPassword,
+    hasOldGridMarkers,
+    hasPageIdHidden,
+    hasSessionIdHidden,
+  });
+
+  if (hasLoginForm || hasPassword) {
+    console.warn("[RS_NAV][PAGE_CHECK] Login markers found, treating as session expired");
     throw new RsSessionExpiredError("RS session expired, got login page instead of waybills grid");
   }
 
-  if (!hasGrid) {
-    const err = new RsSchemaChangedError("Waybills grid not found on page");
-    try {
-      err.debugHtmlFile = await dumpWaybillHtmlForDebug($.html ? $.html() : "", context);
-    } catch (_) {
-      // ignore dump errors
-    }
-    throw err;
+  // Do not throw on missing old grid markers; extraction will decide based on metadata presence.
+  if (!hasOldGridMarkers) {
+    console.warn("[RS_NAV][PAGE_CHECK] Old grid markers missing; layout may have changed");
   }
 }
 
@@ -345,18 +353,21 @@ async function extractWaybillsPageMetadata(html, context = {}) {
     throw err;
   }
 
+  const sessionFromScript = extractPageSession(html);
   const PageID =
     $('input[id="PageID"]').attr("value") ||
     $('input[name="ctl00$PageID"]').attr("value") ||
-    extractHiddenInputValue(html, "PageID");
+    extractHiddenInputValue(html, "PageID") ||
+    sessionFromScript.pageId;
   const SessionID =
     $('input[id="SessionID"]').attr("value") ||
     $('input[name="ctl00$SessionID"]').attr("value") ||
-    extractHiddenInputValue(html, "SessionID");
+    extractHiddenInputValue(html, "SessionID") ||
+    sessionFromScript.sessionId;
 
   if (!PageID || !SessionID) {
     const snippet = html.slice(0, 500);
-    const err = new RsSchemaChangedError("Waybills grid metadata not found; RS.ge DOM likely changed");
+    const err = new RsSchemaChangedError("Waybills layout changed; metadata not found");
     err.htmlSnippet = snippet;
     err.pageID = PageID;
     err.sessionID = SessionID;
