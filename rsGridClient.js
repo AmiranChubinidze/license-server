@@ -693,15 +693,30 @@ function buildSummaryFields() {
 }
 
 async function requestGrid(session, payload) {
-  const resp = await session.client.post(RS_GRID_PATH, payload, {
+  const gridUrl = RS_GRID_PATH;
+  const config = {
     headers: {
+      Accept: "application/json, text/javascript, */*; q=0.01",
       "Content-Type": "application/json; charset=UTF-8",
-      "X-Requested-With": "XMLHttpRequest",
-      Referer: `${RS_BASE_URL}/WB/Waybills`,
       Origin: RS_BASE_URL,
-      "Accept-Language": "ka,en;q=0.9",
+      Referer: `${RS_BASE_URL}/WayBills.aspx`,
+      "X-Requested-With": "XMLHttpRequest",
     },
+  };
+
+  console.log("[RS_GRID][OUR_REQUEST]", {
+    url: gridUrl,
+    headers: {
+      Accept: config.headers.Accept,
+      Origin: config.headers.Origin,
+      Referer: config.headers.Referer,
+      "Content-Type": config.headers["Content-Type"],
+      "X-Requested-With": config.headers["X-Requested-With"],
+    },
+    payload,
   });
+
+  const resp = await session.client.post(gridUrl, payload, config);
   if (resp.status === 401 || resp.status === 403) {
     throw new RsSessionError("RS rejected grid request (session)");
   }
@@ -945,20 +960,33 @@ async function fetchRsGridTotalForMonth(opts) {
       });
       const payload = {
         PageID: pageMeta.pageId,
-        SessionID: pageMeta.sessionId,
         currentTab: pageMeta.currentTab || "tab_given",
         currentTabNotif: "",
+        startRowIndex: 0,
+        maximumRows: "7",
+        sortExpression: "",
+        filterExpression: buildFilterExpression(range),
+        summaryFields: [
+          {
+            FieldName: "FULL_AMOUNT",
+            SummaryFunction: 1,
+            SummaryFraction: 2,
+            SummaryField: null,
+            OnBeforeShow: null,
+          },
+          {
+            FieldName: "TRANSPORT_COAST",
+            SummaryFunction: 1,
+            SummaryFraction: 2,
+            SummaryField: null,
+            OnBeforeShow: null,
+          },
+        ],
         startDate: range.start,
         endDate: range.end,
-        StartDate: range.start,
-        EndDate: range.end,
-        filterExpression: buildFilterExpression(range),
-        gridData: 1,
         ignorePeriod: false,
-        maximumRows: 10,
-        sortExpression: "",
-        startRowIndex: 0,
-        summaryFields: buildSummaryFields(),
+        gridData: 1,
+        SessionID: pageMeta.sessionId,
       };
 
       const gridResponse = await runWithRetry(
