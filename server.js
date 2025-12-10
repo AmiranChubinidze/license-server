@@ -2688,6 +2688,34 @@ app.get("/debug/last-waybills-html", (_req, res) => {
   }
 });
 
+// Stream the raw most recent waybills HTML dump without modification
+app.get("/debug/raw-waybills-html", async (_req, res) => {
+  try {
+    const fs = require("fs");
+    const dirPath = path.join(__dirname, "tmp", "rs-debug");
+    const files = fs.existsSync(dirPath)
+      ? fs.readdirSync(dirPath).filter((f) => f.startsWith("rs-waybills-") && f.endsWith(".html"))
+      : [];
+    if (!files.length) {
+      return res.status(404).send("No waybills debug HTML files found");
+    }
+    const latest = files
+      .map((name) => ({
+        name,
+        time: fs.statSync(path.join(dirPath, name)).mtimeMs,
+      }))
+      .sort((a, b) => b.time - a.time)[0].name;
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("X-Debug-Waybills-File", latest);
+    const stream = fs.createReadStream(path.join(dirPath, latest));
+    stream.on("error", () => res.status(500).send("Failed to read debug HTML file"));
+    return stream.pipe(res);
+  } catch (err) {
+    console.error("[DEBUG][raw-waybills-html] Failed to read file:", err?.message || err);
+    return res.status(500).send("Debug waybills HTML not found");
+  }
+});
+
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error:", err);
   const status = err?.status || err?.statusCode || 500;
