@@ -2716,6 +2716,28 @@ app.get("/debug/raw-waybills-html", async (_req, res) => {
   }
 });
 
+function logRoutes(appInstance) {
+  try {
+    const seen = new Set();
+    console.log("[ROUTES][dump] ============================");
+    appInstance._router?.stack?.forEach((layer) => {
+      if (!layer.route) return;
+      const methods = Object.keys(layer.route.methods)
+        .filter((m) => layer.route.methods[m])
+        .map((m) => m.toUpperCase())
+        .join(",");
+      const line = `${methods} ${layer.route.path}`;
+      if (!seen.has(line)) {
+        seen.add(line);
+        console.log("[ROUTES][dump]", line);
+      }
+    });
+    console.log("[ROUTES][dump] ============================");
+  } catch (err) {
+    console.error("[ROUTES][dump][ERROR]", err && err.message);
+  }
+}
+
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error:", err);
   const status = err?.status || err?.statusCode || 500;
@@ -2734,6 +2756,7 @@ async function initializeRuntime() {
 
 initializeRuntime()
   .then(() => {
+    logRoutes(app);
     if (String(process.env.STUB_SOAP || "").toLowerCase() === "true") {
       const a = Number(process.env.STUB_SOAP_AMOUNT || 12345.67);
       console.log(`[STUB] SOAP disabled; returning total = ${a.toFixed(2)}`);
